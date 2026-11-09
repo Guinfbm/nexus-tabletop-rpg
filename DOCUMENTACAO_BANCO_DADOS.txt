@@ -1,0 +1,310 @@
+DOCUMENTACAO DO BANCO DE DADOS — NEXUS//TABLE
+=============================================
+
+1. OBJETIVO E ESTADO ATUAL
+--------------------------
+Este documento descreve a arquitetura proposta para persistência e jogo
+compartilhado do NEXUS//TABLE. O código atual é um protótipo React que guarda
+parte do estado em localStorage. Firebase ainda não está configurado no projeto;
+este documento é uma especificação para a etapa de implementação, não uma
+declaração de recursos online já ativos.
+
+Projeto front-end: WEB_NEXUS_TABLE/Criar RPG Cyberpunk Online/
+Documentação complementar: DOCUMENTACAO_FRONTEND.txt
+
+2. OBJETIVOS E LIMITES DO MVP
+-----------------------------
+Objetivos:
+- Permitir login e salas privadas para jogar com amigos.
+- Sincronizar dados essenciais da sala em tempo real.
+- Recuperar o estado salvo depois de recarregar ou reconectar.
+- Reduzir leituras e escritas para usar o plano gratuito do Firebase.
+
+Dados incluídos:
+- Perfil mínimo do usuário, sala, participantes, tokens, chat, rolagens,
+  iniciativa e notas privadas do mestre.
+
+Fora do MVP:
+- PDFs de fichas, arquivos de mapas, áudio ou imagens grandes armazenadas na
+  nuvem; continuam locais ou são servidos separadamente.
+- Presença online precisa, cursores compartilhados, desenho livre, áudio em
+  tempo real, histórico ilimitado e ferramentas avançadas de combate.
+- Firebase Storage, Realtime Database, Cloud Functions e outros produtos que
+  exijam habilitar faturamento para o uso pretendido.
+
+3. SERVIÇOS E PLANO DE CUSTO
+----------------------------
+- Firebase Authentication para identidade, com e-mail/senha como provedor
+  inicial; Google pode ser ativado depois no console.
+- Cloud Firestore para dados persistentes e listeners em tempo real.
+- Usar o plano Spark sem associar conta de faturamento. O Spark oferece cotas
+  gratuitas; ultrapassar limites pode interromper o produto até o próximo ciclo,
+  em vez de gerar cobrança automática.
+- Os limites podem mudar. Consultar a página oficial antes de publicar:
+  https://firebase.google.com/docs/firestore/quotas
+  https://firebase.google.com/docs/projects/billing/firebase-pricing-plans
+- No momento da redação, o Firestore padrão no Spark indica 1 GiB armazenado,
+  50 mil leituras por dia, 20 mil escritas por dia, 20 mil exclusões por dia e
+  10 GiB mensais de transferência de saída. Existe uma base Firestore gratuita
+  por projeto. Verificar quotas no console e documentação oficial.
+- A cota é compartilhada entre os aplicativos e ambientes no mesmo projeto
+  Firebase; desenvolvimento e produção devem ser contabilizados juntos.
+- Não prometer custo zero para qualquer volume. No Spark, atingir a cota pode
+  tornar a função indisponível até a renovação.
+
+4. MODELO DE DADOS FIRESTORE
+----------------------------
+Usar documentos e subcoleções; não guardar listas crescentes em arrays no
+documento da sala. IDs de usuários vêm do Firebase Authentication; IDs de
+mensagens, tokens e salas devem ser gerados pelo SDK do Firestore.
+
+users/{uid}
+- displayName: string
+- createdAt: timestamp do servidor
+- updatedAt: timestamp do servidor
+- Guardar somente informações necessárias à interface; não duplicar senha ou
+  credenciais do Authentication.
+
+rooms/{roomId}
+- name: string
+- ownerId: uid do mestre criador
+- status: "active" | "archived"
+- createdAt, updatedAt: timestamps do servidor
+- Campos/configuração geral mínimos. Não incluir listas completas de membros,
+  mensagens ou tokens.
+
+rooms/{roomId}/members/{uid}
+- role: "gm" | "player"
+- displayName: string
+- joinedAt: timestamp do servidor
+- O documento representa participação/autorização na sala; não significa que o
+  usuário esteja online neste momento.
+
+rooms/{roomId}/tokens/{tokenId}
+- name, initials, color: string
+- x, y: número normalizado entre 0 e 100
+- bars: lista pequena de barras {id, name, value, max, color, visible}
+- shape: "circle" | "square" | "hex"
+- size: "small" | "medium" | "large"
+- enemy, hidden: boolean
+- ownerId: uid ou null
+- updatedAt: timestamp do servidor
+- Manter campos limitados e não inserir imagem em base64.
+
+rooms/{roomId}/messages/{messageId}
+- type: "chat" | "roll"
+- authorId: uid autenticado
+- authorName: nome de exibição validado/obtido da associação à sala
+- text: conteúdo curto de chat ou descrição legível do resultado
+- createdAt: timestamp do servidor
+- roll: para type="roll", objeto opcional com sides, natural, modifier e total
+- Não aceitar autor/horário fornecidos livremente pelo cliente.
+
+rooms/{roomId}/gameState/main
+- initiative: lista pequena de {tokenId ou participantId, name, value}
+- currentTurn: identificador opcional
+- round: número inteiro opcional
+- updatedAt: timestamp do servidor
+- Um único documento reduz leituras, mas só deve guardar dados pequenos e
+  atualizados com pouca frequência.
+
+rooms/{roomId}/private/gm
+- notes: texto privado do mestre, com limite de tamanho definido na validação
+- updatedAt: timestamp do servidor
+- Separar em documento próprio permite regras explícitas de acesso ao mestre.
+
+roomInvites/{inviteCode}
+- roomId: identificador da sala
+- createdBy: uid do mestre
+- createdAt: timestamp do servidor
+- Código aleatório longo, imprevisível e sem significado pessoal.
+- Documento serve apenas como ponte de convite; não contém nome da sala,
+  participantes ou qualquer conteúdo privado.
+
+5. FLUXO DE CONVITES E PARTICIPAÇÃO
+-----------------------------------
+1. Usuário autentica-se com Firebase Authentication.
+2. Mestre cria o documento da sala e sua participação como GM. A operação deve
+   usar batch/transaction para não deixar sala sem proprietário se uma escrita
+   falhar.
+3. SDK gera código aleatório seguro e grava o vínculo em roomInvites/{code}.
+   O código é copiado para compartilhar com os jogadores.
+4. Jogador informa o código. O cliente lê o documento exato do convite, e não
+   faz consulta/listagem da coleção de códigos.
+5. Jogador cria rooms/{roomId}/members/{uid} com papel player. As regras validam
+   convite ativo, identidade do usuário e papel permitido.
+6. Depois de membro, cliente pode assinar os listeners autorizados da sala.
+7. Mestre pode invalidar convite apagando o documento do código. Não apagar
+   automaticamente sala ou histórico no MVP.
+
+Nota de segurança: regras Firestore devem permitir a leitura pontual do
+documento de convite quando o código é conhecido, sem permitir listar
+roomInvites. A segurança vem de códigos aleatórios longos e das regras que
+impedem leitura do conteúdo da sala até a associação estar criada. Revisar as
+regras com o Firebase Emulator Suite antes de usar dados reais.
+
+6. REGRAS DE ACESSO
+-------------------
+Aplicar autorização no Firestore Security Rules. A interface ocultar um botão
+não constitui controle de acesso.
+
+- Exigir usuário autenticado para acesso a dados pessoais ou sala.
+- Usuários podem ler e atualizar somente seu próprio perfil, com campos
+  permitidos limitados.
+- Conteúdo de sala é legível apenas por participantes atuais.
+- Criar sala deve criar ownerId igual ao usuário autenticado e a associação GM
+  correspondente; somente o mestre pode alterar configuração/arquivar sala.
+- Mestre pode criar, atualizar, ocultar e remover qualquer token.
+- Jogador pode ler tokens visíveis. Jogador não lê token oculto.
+- Jogador pode atualizar somente as coordenadas x/y do token cujo ownerId seja
+  seu uid; as regras devem rejeitar mudanças em barras, ocultação, dono ou outros
+  campos. Se o fluxo de jogo não precisar disso, restringir tokens a movimento
+  exclusivo do mestre é ainda mais simples e deve ser escolhido antes da
+  implementação.
+- Apenas mestre lê/escreve rooms/{roomId}/private/gm e administra iniciativa.
+- Participante autenticado pode criar mensagem apenas como si mesmo e com tipo
+  e campos válidos. Mensagens não são editáveis pelo autor depois de enviadas;
+  exclusão/moderação fica a cargo do mestre em fase posterior.
+- Bloquear escritas em coleções/campos não explicitamente permitidos.
+- Fazer consultas de jogador com filtro hidden == false. Regras Firestore não
+  filtram resultados: se uma consulta puder retornar documentos proibidos, a
+  consulta inteira falha.
+- Não usar credenciais administrativas no front-end.
+
+7. ECONOMIA DE LEITURAS E ESCRITAS
+----------------------------------
+- Movimento: atualizar estado visual local durante drag e persistir somente no
+  pointer up/drop. Uma movimentação concluída gera uma gravação por token.
+- Chat: persistir uma escrita por mensagem; assinar apenas as mensagens recentes
+  e paginar o histórico anterior sob demanda. Não assinar toda a coleção.
+- Rolagens: uma escrita por rolagem, usando o documento de mensagem com dados
+  estruturados no mesmo documento.
+- Tokens: assinar somente os documentos da sala necessários; evitar listeners
+  duplicados e consultas repetidas dentro de efeitos React.
+- Iniciativa/notas: salvar quando houver alteração confirmada ou com debounce
+  curto, evitando uma gravação por tecla. Preservar rascunho local enquanto o
+  usuário digita.
+- Ao sair/trocar de sala/desmontar componente, executar a função unsubscribe de
+  cada listener. Exibir estados de conexão e erro para não criar tentativas
+  automáticas sem limite.
+- Não configurar TTL nem tarefas automáticas de exclusão no Spark. Se o histórico
+  crescer muito, planejar política de retenção e mecanismo compatível com o plano
+  escolhido.
+- Conferir o painel Usage do Firebase depois de testes com vários navegadores.
+
+8. CAMADA DE ACESSO NO FRONT-END
+--------------------------------
+Criar módulo Firebase para inicialização e exportar auth/db sem espalhar chamadas
+do SDK em componentes visuais. Separar acesso a dados em serviços, por exemplo:
+- auth: observar sessão, login, cadastro e logout.
+- rooms: criar sala, entrar por convite, ouvir membros e sair.
+- tokens: ouvir lista autorizada, criar/atualizar/remover segundo papel.
+- messages: ouvir página recente, carregar anteriores, enviar chat/rolagem.
+- gameState: ouvir/salvar iniciativa.
+- gmPrivate: ouvir/salvar notas privadas.
+
+Definir tipos TypeScript compartilhados: UserProfile, Room, RoomMember, Token,
+StatusBar, ChatMessage, DiceRoll e GameState. Mapear Timestamp do SDK para tipos
+de domínio na camada de serviço; a interface não deve acessar caminhos do banco.
+
+Configuração local:
+- Adicionar dependência oficial firebase ao package.json e lockfile.
+- Criar .env.example sem segredos e carregar VITE_FIREBASE_API_KEY,
+  VITE_FIREBASE_AUTH_DOMAIN, VITE_FIREBASE_PROJECT_ID,
+  VITE_FIREBASE_APP_ID (e demais campos exigidos pelo app web).
+- Guardar valores locais em .env.local, ignorado pelo Git.
+- Exibir orientação amigável quando configuração estiver ausente.
+- Configuração web Firebase identifica o projeto, mas não substitui regras de
+  segurança. Nunca incluir chave de service account no navegador.
+
+9. TESTES E ACEITE
+------------------
+Regras e permissões:
+- Usuário anônimo/não autenticado não lê nem escreve conteúdo privado.
+- Não membro não acessa sala, mensagens, notas, tokens ou iniciativa.
+- Convite válido permite criar somente a própria associação como player.
+- Convite inválido ou revogado não permite entrada.
+- Jogador não lê token oculto, não muda token alheio nem altera campos além da
+  posição do próprio token.
+- Mestre consegue administrar tokens, iniciativa e notas privadas.
+- Mensagem com autor falso, horário escolhido pelo cliente ou estrutura inválida
+  é negada.
+
+Fluxos entre clientes:
+- Mestre cria sala; jogador entra por código em outro navegador.
+- Mudança de token, mensagem e rolagem aparece sem recarregar.
+- Drag persiste uma posição final, não as coordenadas de cada movimento.
+- Recarregar/reconectar recupera sala, membros, tokens e estado de jogo.
+- Sair ou trocar de sala encerra listeners e não recebe atualizações antigas.
+- Chat carrega página recente e histórico anterior somente quando solicitado.
+
+Ferramentas recomendadas:
+- Firebase Emulator Suite para Authentication/Firestore e testes automatizados
+  das regras, evitando escritas em produção durante desenvolvimento.
+- Build TypeScript/Vite após configuração de ambiente.
+- Teste manual com pelo menos dois usuários e dois navegadores.
+
+10. PLANO DE IMPLEMENTAÇÃO
+--------------------------
+Etapa 1 — Configuração e autenticação:
+- Instalar SDK, configurar variáveis, login/cadastro, estado de autenticação e
+  perfil mínimo; preparar emuladores e regras iniciais.
+
+Etapa 2 — Salas e acesso:
+- Criar sala, código aleatório, entrar por convite, membros, papéis e regras.
+
+Etapa 3 — Mesa compartilhada:
+- Integrar tokens com atualização somente ao soltar; chat e rolagens em uma
+  coleção paginada; listeners com limpeza garantida.
+
+Etapa 4 — Dados do mestre e finalização:
+- Persistir notas e iniciativa com acesso reservado; testar regras, reconexão,
+  erros e consumo de leituras/escritas.
+
+11. PENDÊNCIAS ANTES DE PUBLICAR
+-------------------------------
+- Criar o projeto Firebase e habilitar Authentication (e-mail/senha; Google se
+  desejado) e Cloud Firestore na localização escolhida.
+- Confirmar que o projeto está no Spark e sem conta de faturamento associada.
+- Adicionar configuração Firebase local sem versionar .env.local.
+- Implementar e revisar regras no Emulator Suite antes de publicar.
+- Confirmar se jogadores podem mover o próprio token ou se somente o mestre
+  movimenta tokens. A regra proposta permite ao jogador alterar apenas a posição
+  do token próprio; isso precisa coincidir com o comportamento de jogo desejado.
+- O Firebase SDK ainda não está instalado no projeto atual; a etapa de instalação
+  depende de permitir a atualização do package.json e do pnpm-lock.yaml.
+
+12. REFERÊNCIAS OFICIAIS
+------------------------
+- Planos e regras de faturamento Firebase:
+  https://firebase.google.com/docs/projects/billing/firebase-pricing-plans
+- Quotas e limites do Firestore:
+  https://firebase.google.com/docs/firestore/quotas
+- Comparação Firestore e Realtime Database:
+  https://firebase.google.com/docs/database/rtdb-vs-firestore
+- Regras de segurança Firestore:
+  https://firebase.google.com/docs/firestore/security/get-started
+- Testar regras com o Emulator Suite:
+  https://firebase.google.com/docs/rules/unit-tests
+
+13. ATUALIZAÇÃO DE ESCOPO — FIREBASE FORA DO MVP ATUAL
+-------------------------------------------------------
+O MVP agora solicitado é exclusivamente front-end e local. Firebase, Authentication,
+Firestore, regras de segurança e serviços de nuvem descritos anteriormente são
+uma proposta futura, não fazem parte da implementação atual.
+
+Para o MVP entre abas:
+- BroadcastChannel sincroniza eventos efêmeros entre abas da mesma origem e do
+  mesmo navegador.
+- localStorage mantém estado textual/estrutural pequeno que deve sobreviver a
+  recarga, incluindo tokens, mensagens recentes, iniciativa e notas.
+- IndexedDB guarda PDFs e imagens localmente; object URLs são temporárias para
+  exibição. Esses arquivos não são transmitidos por URL para outras abas.
+- Não há autenticação real, salas online, acesso entre computadores, regras de
+  segurança remotas ou cobrança de serviço cloud.
+
+Se o produto voltar a exigir multiplayer pela internet, revisar esta proposta,
+as cotas atuais dos serviços e as necessidades de autorização antes de ativar
+Firebase ou outro backend.
+
+FIM

@@ -1,0 +1,282 @@
+ARQUITETURA E RESPONSABILIDADES — NEXUS//TABLE
+==============================================
+
+1. FINALIDADE E ESTADO DO PROJETO
+---------------------------------
+Este documento descreve a arquitetura proposta para transformar o protótipo
+NEXUS//TABLE em uma mesa virtual de RPG online. Ele separa o que existe hoje no
+front-end das responsabilidades planejadas para o MVP.
+
+ESTADO ATUAL:
+- O projeto tem uma interface de protótipo feita com React 19, TypeScript, Vite
+  e CSS/Tailwind.
+- A maior parte do comportamento e estado está concentrada em src/App.tsx.
+- Tokens, anotações, desenhos e algumas preferências são locais ao navegador.
+- Chat, rolagens, sala, convite e papéis são demonstrativos e não são
+  compartilhados entre jogadores.
+- Não foi encontrada integração com Firebase, autenticação real, backend ou
+  banco de dados.
+- Portanto, a arquitetura Firebase descrita a seguir é planejada, não está
+  implementada ainda.
+
+Documentação relacionada:
+- DOCUMENTACAO_FRONTEND.txt — estrutura e funcionalidades da interface atual.
+- DOCUMENTACAO_BANCO_DADOS.txt — proposta detalhada de coleções, regras e
+  economia de operações no Firestore.
+
+2. VISÃO GERAL DA ARQUITETURA PROPOSTA
+-------------------------------------
+Front-end React/TypeScript no navegador
+        |                         |
+        | identidade              | dados e sincronização
+        v                         v
+Firebase Authentication     Cloud Firestore
+                                    ^
+                                    |
+                           Firestore Security Rules
+
+O front-end conversa diretamente com os SDKs oficiais do Firebase. Para o MVP
+não será criado um servidor Node.js próprio: Authentication cuida da identidade,
+Firestore armazena e sincroniza dados, e Security Rules protegem as operações.
+Se futuramente houver processamento privilegiado ou integração externa que não
+possa ser feita com segurança no navegador, avaliar um serviço de servidor como
+uma etapa separada.
+
+3. RESPONSABILIDADES DE CADA PARTE
+----------------------------------
+
+3.1 FRONT-END — REACT E TYPESCRIPT
+Responsabilidades:
+- Renderizar a mesa, mapa, tokens, chat, dados, iniciativa e áreas do mestre.
+- Adaptar a interface a desktop e celular e apresentar estados de carregamento,
+  erro, acesso negado e perda de conexão.
+- Manter movimentos e interações transitórias localmente durante a ação do
+  usuário; persistir somente a alteração final necessária.
+- Observar mudanças do Firestore por listeners e atualizar a interface sem
+  recarregar a página.
+- Usar uma camada de dados/serviços separada dos componentes visuais, com tipos
+  TypeScript para sala, participante, token, mensagem, rolagem e estado de jogo.
+- Encerrar cada listener ao sair da sala, mudar de sala ou desmontar o componente.
+- Nunca decidir a autorização somente pela visibilidade de botões. O front-end
+  pode esconder ações indisponíveis, mas as regras do Firestore são a proteção.
+
+Não é responsabilidade do front-end:
+- Guardar senhas ou credenciais administrativas.
+- Ser a fonte confiável do papel de usuário, autoria de mensagens ou autorização.
+- Armazenar PDFs e arquivos grandes como base64 no Firestore.
+
+3.2 FIREBASE AUTHENTICATION
+Responsabilidades:
+- Criar e manter a identidade de cada jogador.
+- Fornecer ao front-end o UID autenticado usado para associar perfil, sala,
+  participação e autoria das mensagens.
+- Permitir cadastro, login, recuperação de sessão e logout.
+- Começar com e-mail/senha; habilitar login Google no console se desejado.
+
+Authentication não armazena o conteúdo das partidas nem decide sozinho quais
+salas o usuário pode acessar. A associação e os papéis são conferidos nas regras
+do Firestore.
+
+3.3 CLOUD FIRESTORE
+Responsabilidades:
+- Persistir perfis mínimos, salas, participantes, tokens, mensagens/rolagens,
+  iniciativa e anotações privadas do mestre.
+- Fornecer listeners para atualizações em tempo real dos documentos que cada
+  participante tem permissão para ler.
+- Recuperar os dados persistidos quando um jogador recarregar ou reconectar.
+
+Coleções planejadas, em resumo:
+- users/{uid}
+- rooms/{roomId}
+- rooms/{roomId}/members/{uid}
+- rooms/{roomId}/tokens/{tokenId}
+- rooms/{roomId}/messages/{messageId}
+- rooms/{roomId}/gameState/main
+- rooms/{roomId}/private/gm
+- roomInvites/{inviteCode}
+
+Não colocar arrays crescentes de mensagens, participantes ou tokens no
+documento da sala. Consultar DOCUMENTACAO_BANCO_DADOS.txt para os campos
+propostos e detalhes de acesso.
+
+3.4 FIRESTORE SECURITY RULES
+Responsabilidades:
+- Exigir autenticação para operações privadas.
+- Restringir leitura de sala e subcoleções aos participantes autorizados.
+- Restringir controles de mestre a membros com papel gm.
+- Impedir jogadores de ler tokens ocultos e editar tokens que não lhes pertencem.
+- Validar autoria, campos permitidos, tipos e limites de tamanho nas escritas.
+- Negar por padrão qualquer caminho ou operação que não esteja explicitamente
+  permitida.
+
+Observação: as regras do Firestore não filtram documentos proibidos. Uma
+consulta precisa limitar seu resultado aos documentos que o usuário pode ler;
+caso contrário, a consulta inteira pode ser negada. As regras devem ser testadas
+com usuários de papéis diferentes antes de publicar.
+
+3.5 SERVIDOR NODE.JS
+Não faz parte do MVP. O Firebase atende aos fluxos planejados sem servidor
+próprio, reduzindo configuração e manutenção. Considerar Node.js no futuro se o
+produto precisar de operações privilegiadas, integrações com APIs secretas,
+processamento pesado, lógica que não deve rodar no cliente ou automações que
+exijam execução no servidor. Segredos de serviço nunca devem ir para o front-end.
+
+4. DADOS NA NUVEM E DADOS LOCAIS
+--------------------------------
+Planejado para Firestore:
+- Dados mínimos do usuário e perfil público de jogo.
+- Salas, criador, estado da sala e participantes/papéis.
+- Tokens, posição final, barras de status e propriedades de jogo.
+- Mensagens de chat e resultados estruturados de rolagens.
+- Iniciativa/rodada e notas privadas do mestre.
+- Vínculo de códigos de convite a uma sala, sem expor seus dados privados.
+
+Manter local no MVP:
+- Arquivos PDF de ficha e preferência de página/zoom do leitor.
+- Arquivos de áudio e preferências de volume/repetição.
+- Arquivos de mapa escolhidos pelo jogador ou mestre, até existir uma solução
+  aprovada para hospedagem de mídia.
+- Estados transitórios de interface, como token enquanto está sendo arrastado,
+  painel aberto, seleção atual e rascunho de texto ainda não enviado.
+- Desenhos temporários e presença/cursor, fora do MVP.
+
+Não usar Firestore para arquivos grandes ou imagens em base64. O MVP não inclui
+Firebase Storage. Mapas para uso futuro devem ser otimizados e a forma de
+hospedagem será definida separadamente.
+
+5. CUSTO E CUIDADOS COM O PLANO SPARK
+------------------------------------
+O objetivo é iniciar no plano gratuito Spark sem habilitar faturamento. O uso
+gratuito tem limites e não é uma promessa de disponibilidade ilimitada nem de
+que o serviço nunca será interrompido.
+
+No momento desta documentação, as cotas gratuitas do Firestore Standard incluem
+50.000 leituras, 20.000 escritas e 20.000 exclusões por dia, 1 GiB armazenado e
+10 GiB de transferência de saída por mês. Confirmar os números atuais antes da
+publicação:
+https://firebase.google.com/docs/firestore/quotas
+https://firebase.google.com/docs/projects/billing/firebase-pricing-plans
+
+Se uma cota gratuita for excedida em Spark, o serviço correspondente pode ficar
+indisponível até a renovação da cota. A estimativa “menos de 1%” não é garantida:
+consumo depende do número de jogadores, duração, consultas, reconexões e
+frequência de alterações.
+
+Medidas para reduzir consumo:
+- Gravar coordenadas do token apenas quando o usuário soltar o token no mapa,
+  não a cada evento do mouse.
+- Ouvir apenas os documentos necessários da sala e carregar mensagens antigas
+  sob demanda, começando por uma janela recente.
+- Criar listeners uma vez por sala e removê-los ao sair; evitar recriação por
+  renderizações e loops de React.
+- Gravar iniciativa/notas após confirmação ou debounce, não em cada tecla.
+- Uma rolagem cria uma mensagem com resultado estruturado, em vez de várias
+  escritas separadas.
+- Não persistir presença, cursores, áudio, PDFs, imagens grandes ou estado
+  transitório de animação.
+- Conferir o painel Usage do Firebase com uma sala de teste multiusuário.
+
+6. RECURSOS FORA DO MVP
+-----------------------
+- Upload e armazenamento de PDFs, mapas, tokens-imagem e áudio.
+- Presença online confiável e cursores compartilhados.
+- Sincronização contínua de cada pixel do movimento do token.
+- Comunicação por voz/vídeo.
+- Servidor Node.js próprio, Cloud Functions ou tarefas de backend.
+- Retenção/limpeza automática de mensagens e relatórios de uso avançados.
+- Fichas digitais completas ou regras automatizadas do sistema de RPG.
+
+7. FLUXO BÁSICO DE UMA SESSÃO
+-----------------------------
+1. Usuário cria conta ou faz login via Firebase Authentication.
+2. Mestre cria sala; Firestore grava a sala e a participação GM.
+3. Aplicação gera código aleatório de convite e grava o vínculo à sala.
+4. Jogador autenticado informa código; Firestore valida convite e registra sua
+   associação como player.
+5. Front-end abre listeners para tokens visíveis, membros, mensagens recentes e
+   estado permitido ao papel do usuário.
+6. Ao arrastar token, posição atualiza localmente; ao soltar, grava o destino no
+   Firestore e os demais clientes recebem a atualização.
+7. Chat e rolagens são criados como mensagens com autor autenticado e horário do
+   servidor.
+8. Ao sair, todos os listeners são encerrados. Ao voltar, os dados persistidos
+   são carregados novamente.
+
+8. FALHAS E COMPORTAMENTO ESPERADO
+----------------------------------
+- Configuração Firebase ausente: mostrar instrução de configuração, sem quebrar
+  a interface nem simular sincronização online.
+- Login expirado: solicitar autenticação novamente antes de ações protegidas.
+- Código inválido/revogado: informar que não foi possível entrar, sem revelar
+  se outras salas existem.
+- Falta de permissão: exibir mensagem clara e manter a sessão em modo leitura
+  quando possível.
+- Sem conexão: informar que a sincronização está pausada; não indicar que uma
+  alteração foi compartilhada enquanto não houver confirmação.
+- Cota ou erro de serviço: mostrar falha de sincronização e permitir tentar
+  novamente com limite, sem criar ciclos infinitos de consulta.
+
+9. ETAPAS DE IMPLEMENTAÇÃO
+--------------------------
+1. Criar projeto Firebase, manter Spark, habilitar Auth e Firestore, adicionar
+   configuração local e validar build com credenciais ausentes/presentes.
+2. Implementar login/cadastro, sessão do usuário, criação de sala e convites.
+3. Implementar regras de segurança e testar mestre, jogador, não membro e
+   usuário não autenticado no Emulator Suite.
+4. Sincronizar tokens, chat e rolagens; implementar persistência ao soltar
+   tokens e encerrar listeners corretamente.
+5. Persistir iniciativa e notas privadas do mestre; medir leituras/escritas com
+   vários navegadores e ajustar consultas.
+6. Atualizar documentação após a integração e registrar quais recursos passaram
+   de planejados para implementados.
+
+10. CRITÉRIOS DE ACEITE DO MVP
+------------------------------
+- Mestre e jogadores autenticam-se e participam da mesma sala em navegadores
+  diferentes.
+- Dados da sala não são legíveis por não membros.
+- Papéis são aplicados pelas regras, não só pela interface.
+- Tokens, mensagens, rolagens e iniciativa atualizam os outros clientes em
+  tempo real e voltam após recarregar.
+- Arrastar um token gera uma gravação final ao soltar, não uma escrita por pixel.
+- Notas privadas são visíveis apenas ao mestre.
+- PDFs permanecem locais e podem ser usados sem upload.
+- Todos os listeners são removidos quando não são mais necessários.
+- O projeto continua sem servidor Node.js no MVP e não exige ativar faturamento.
+
+11. REFERÊNCIAS
+---------------
+- Firebase Spark e faturamento:
+  https://firebase.google.com/docs/projects/billing/firebase-pricing-plans
+- Quotas do Cloud Firestore:
+  https://firebase.google.com/docs/firestore/quotas
+- Firestore ou Realtime Database:
+  https://firebase.google.com/docs/database/rtdb-vs-firestore
+- Regras de segurança do Firestore:
+  https://firebase.google.com/docs/firestore/security/get-started
+- Testes de regras:
+  https://firebase.google.com/docs/rules/unit-tests
+
+12. DECISÃO MAIS RECENTE — MVP LOCAL ENTRE ABAS
+------------------------------------------------
+Para o primeiro MVP em andamento, a arquitetura Firebase acima é futura e não
+deve ser implementada agora. O escopo solicitado é 100% front-end, sem backend,
+Firebase ou contas reais. Esta seção prevalece sobre as recomendações de Firebase
+descritas anteriormente neste documento.
+
+- React/TypeScript mantém a interface e o estado de cada aba.
+- BroadcastChannel envia mensagens tipadas para outras abas da mesma origem e
+  navegador. A origem e o ID de evento evitam que a aba retransmita as próprias
+  mensagens ou crie ciclos.
+- localStorage guarda estado pequeno que precisa sobreviver a recarga, como
+  tokens, mensagens recentes, notas e iniciativa.
+- IndexedDB guarda arquivos PDF e imagens de tokens. Object URLs temporárias são
+  criadas para exibir cada arquivo e revogadas quando trocadas ou ao desmontar.
+- Nenhum arquivo de usuário é enviado ou sincronizado como URL temporária.
+- Os recursos sincronizados não conectam pessoas em computadores diferentes.
+  Cada aba simula um participante local; o seletor Mestre/Jogador não oferece
+  segurança ou autorização real.
+- Um serviço online só deve ser considerado em uma fase futura, após nova decisão
+  explícita de escopo e arquitetura.
+
+FIM

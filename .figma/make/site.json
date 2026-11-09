@@ -1,0 +1,10 @@
+{
+  "description": "Jogue RPG online com amigos em salas privadas, mapas interativos, chat, dados, fichas em PDF e ferramentas de organização para mestres.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}

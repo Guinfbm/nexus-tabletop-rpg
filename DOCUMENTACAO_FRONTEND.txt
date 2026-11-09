@@ -1,0 +1,253 @@
+DOCUMENTACAO DO PROJETO — NEXUS//TABLE
+======================================
+
+1. OBJETIVO DESTE DOCUMENTO
+---------------------------
+Registrar o estado atual do front-end do NEXUS//TABLE, suas tecnologias,
+funcionalidades, limitações e prioridades recomendadas. Este documento descreve
+o código encontrado até 09/11/2026. Recursos apresentados como planejados ou
+simulados não devem ser entendidos como serviços online já implementados.
+
+2. RESUMO DO PROJETO
+--------------------
+NEXUS//TABLE é um protótipo de interface para uma mesa virtual de RPG com tema
+cyberpunk. A aplicação é uma SPA (página única) feita com React e Vite. O foco
+atual é a experiência de uso no navegador; não foi encontrado backend, banco de
+dados ou infraestrutura de comunicação entre jogadores.
+
+Pasta do código: WEB_NEXUS_TABLE/Criar RPG Cyberpunk Online/
+Ponto de entrada visual: src/App.tsx
+Estilos: src/index.css
+Inicialização React: src/main.tsx
+
+3. TECNOLOGIAS E EXECUÇÃO
+-------------------------
+- React 19 e React DOM 19.
+- TypeScript 5.7.
+- Vite 8 para desenvolvimento e build.
+- Tailwind CSS 4 está instalado e configurado; a maior parte da interface
+  existente usa classes CSS próprias em src/index.css.
+- Gerenciador de pacotes indicado pelos arquivos: pnpm.
+- Integração e configuração de publicação do Figma Make no vite.config.ts e
+  .figma/make/site.json.
+
+Comandos definidos no package.json:
+- pnpm dev: inicia servidor de desenvolvimento Vite.
+- pnpm build: gera a versão de produção em dist/.
+- pnpm preview: serve localmente a versão gerada.
+- pnpm format: formata os arquivos com oxfmt.
+
+O AGENTS.md do projeto informa que, no ambiente Figma Make, o servidor Vite já
+pode estar ativo na porta configurada por PORT (padrão 8443). Fora desse
+ambiente, use os comandos acima conforme a instalação local.
+
+4. ESTRUTURA RELEVANTE
+----------------------
+- src/App.tsx: componente principal, estado da interface, ações do mapa,
+  ferramentas do mestre, chat, dados, PDF e áudio.
+- src/index.css: tema escuro, cores neon, layout, componentes e regras responsivas.
+- src/main.tsx: monta o App no elemento #root e importa o CSS global.
+- src/assets/neon-grid-map.jpg: imagem de mapa usada como recurso visual.
+- public/favicon.png: ícone do site.
+- index.html: casca HTML do Vite; título e idioma são preenchidos pela
+  configuração do Figma Make.
+- .figma/make/site.json: descrição e metadados da publicação.
+- package.json / pnpm-lock.yaml: scripts e dependências.
+
+5. FUNCIONALIDADES PRESENTES NO PROTÓTIPO
+-----------------------------------------
+Interface e navegação:
+- Identidade NEXUS//TABLE e tema visual cyberpunk, escuro, com acentos neon.
+- Cabeçalho com nome/código de sessão demonstrativos, avatares de exemplo,
+  botão de convite e alternância visual entre Mestre e Jogador.
+- Navegação para Mesa e, na visualização de Mestre, painel/ferramentas do mestre.
+- Layout responsivo com adaptação para tablet e celular.
+
+Mapa e tokens:
+- Cena de mapa de demonstração com tokens iniciais de personagens e inimigos.
+- Tokens podem ser adicionados e arrastados; podem incluir nome, imagem,
+  formato, tamanho e barras de status.
+- Há controles visuais para exibir status, medir distâncias e desenhar no mapa.
+- Desenhos, tokens e permissão local de desenho são salvos no localStorage.
+- Tokens, chat e alterações compartilháveis também são propagados entre abas
+  do mesmo navegador/origem por BroadcastChannel; a posição é enviada ao soltar
+  o token, não durante cada movimento do ponteiro.
+- Há controle de névoa e zoom na interface, mas conferir o código antes de
+  considerar essas ações como funcionalidades concluídas; alguns controles são
+  apenas visuais.
+
+Chat e rolagem:
+- Chat e rolagens são sincronizados somente entre abas locais, não entre
+  computadores ou navegadores diferentes. As últimas 300 mensagens também são
+  mantidas no localStorage.
+- Rolador d10 de Cyberpunk RED mostra o resultado natural, modificador, dado
+  adicional em 10 natural ou 1 natural, total e destaque de crítico.
+
+Ferramentas do mestre:
+- Área de organização do mestre com iniciativa, anotações, jogadores/tokens e
+  controles adicionais para a sessão.
+- Anotações e iniciativa são guardadas no localStorage e sincronizadas entre
+  abas abertas.
+- O seletor Mestre/Jogador altera a visualização local e não representa controle
+  de acesso autenticado.
+
+Ficha PDF:
+- Painel lateral permite selecionar um PDF local e visualizá-lo em um iframe.
+- O protótipo exibe um nome de ficha de exemplo inicialmente, mas não inclui o
+  arquivo da ficha por padrão nem cria um sistema próprio de fichas.
+- PDF selecionado fica no IndexedDB local e é aberto por URL temporária do
+  navegador; não há upload para servidor nem compartilhamento com outros
+  participantes. Imagens dos tokens também ficam no IndexedDB.
+
+Áudio:
+- Interface de seleção e reprodução local de áudio, com controles de volume e
+  repetição; o áudio escolhido não é sincronizado para outros usuários.
+
+6. ESTADO E PERSISTÊNCIA
+------------------------
+O estado React é mantido no navegador. localStorage guarda tokens, mensagens
+recentes, anotações, iniciativa, desenhos e permissão de desenho em chaves
+prefixadas `nexus-table-` (há leitura de migração das chaves antigas). PDFs e
+imagens dos tokens ficam no IndexedDB local. Isso não é um backend e não
+sincroniza dados entre computadores ou navegadores diferentes.
+
+7. O QUE AINDA NÃO ESTÁ IMPLEMENTADO PARA JOGO ONLINE
+----------------------------------------------------
+- Cadastro, autenticação e perfis persistentes.
+- Criação real de salas privadas, códigos de convite funcionais e controle de
+  entrada/permissões por usuário.
+- Comunicação em tempo real pela internet entre computadores ou navegadores.
+- Presença e salas reais; BroadcastChannel cobre somente abas do mesmo navegador.
+- Backend e banco de dados para armazenar sessões e conteúdo.
+- Upload/armazenamento de mapas, fichas PDF e áudio com acesso compartilhado.
+- Persistência durável, recuperação de sessão e tratamento de conexão perdida.
+- Regras completas de visibilidade e autorização para mestre, jogador e tokens.
+- Testes automatizados identificados no projeto.
+
+8. PRIORIDADES RECOMENDADAS
+---------------------------
+PRIORIDADE 1 — definir e implementar a base online:
+- Escolher backend e serviço de atualização em tempo real, autenticação e
+  armazenamento persistente antes de ampliar as ferramentas visuais.
+- Criar sala compartilhada com código/convite, identidade de participante e
+  permissões mínimas de mestre e jogador.
+- Sincronizar mapa, posições e estado dos tokens para todos os participantes.
+
+PRIORIDADE 2 — completar o ciclo básico de uma sessão:
+- Sincronizar chat e resultados dos dados.
+- Manter a sala e seu estado após recarregar ou reconectar.
+- Validar que ações de cada papel respeitem as permissões da sala.
+
+PRIORIDADE 3 — arquivos de jogo:
+- Permitir abrir ficha PDF já existente na aba/painel de ficha.
+- Decidir se PDF é apenas local para cada jogador ou compartilhado pela sala;
+  se compartilhado, adicionar armazenamento e regras de acesso.
+- Adicionar gerenciamento de mapas apenas se necessário para as partidas.
+
+PRIORIDADE 4 — ferramentas complementares:
+- Aprimorar iniciativa, desenhos, régua, névoa, música, personalização de
+  tokens e configurações após estabilizar a sessão compartilhada.
+- Incluir testes para os fluxos essenciais, responsividade e reconexão.
+
+9. CRITÉRIOS PARA CONSIDERAR A PRIMEIRA VERSÃO JOGÁVEL
+------------------------------------------------------
+- Mestre consegue criar uma sala e compartilhar acesso com amigos.
+- Jogadores conseguem entrar com seus próprios dispositivos.
+- Todos veem as mesmas posições e alterações de tokens sem atualizar a página.
+- Mensagens e resultados de dados aparecem para todos na ordem correta.
+- A ficha PDF pode ser aberta sem bloquear o mapa/chat.
+- Ao recarregar ou reconectar, a sala recupera seu estado persistido.
+- Jogadores não conseguem executar ações reservadas ao mestre.
+- Interface utilizável em desktop e celular.
+
+10. PROMPT CLARO PARA CONTINUAR O DESENVOLVIMENTO
+-------------------------------------------------
+Analise o projeto existente em WEB_NEXUS_TABLE/Criar RPG Cyberpunk Online e
+continue o desenvolvimento do front-end NEXUS//TABLE sem recriar a interface
+que já funciona. Preserve o tema cyberpunk, a navegação atual e a adaptação para
+celular. Considere o estado atual descrito em DOCUMENTACAO_FRONTEND.txt.
+
+O código presente é um protótipo local: não trate chat, convites, rolagens,
+tokens ou ferramentas demonstrativas como recursos já sincronizados online.
+Antes de implementar funcionalidades dependentes de servidor, identifique e
+documente as interfaces necessárias entre front-end e backend (sala, membros,
+permissões, mapa/tokens, chat, rolagens e arquivos). Não invente credenciais ou
+serviços já configurados. Se a infraestrutura ainda não estiver escolhida,
+proponha uma integração mínima e deixe explícitos os requisitos antes de ligar o
+front-end a um serviço externo.
+
+Implemente por etapas: primeiro sala compartilhada e sincronização de tokens;
+depois chat e dados; em seguida persistência e reconexão; por último ferramentas
+complementares do mestre. A ficha deve continuar em uma aba/painel próprio e
+aceitar PDFs existentes, sem criar um sistema completo de fichas do zero.
+Mantenha a interface responsiva. Ao concluir cada etapa, descreva o que mudou,
+como foi verificado e o que ainda depende de backend ou configuração externa.
+
+11. NOTAS DE MANUTENÇÃO
+-----------------------
+- src/App.tsx concentra grande parte da interface e da lógica. Conforme o
+  projeto crescer, separar componentes por área (mapa, chat, ficha, mestre) e
+  serviços de estado/sincronização facilitará manutenção.
+- Não salvar dados grandes (por exemplo, imagens ou PDFs) em localStorage como
+  solução de compartilhamento. Usar armazenamento apropriado quando houver
+  backend.
+- Distinguir sempre dados de demonstração de dados reais da sala.
+- Manter a documentação atualizada quando funcionalidades ou decisões de
+  infraestrutura mudarem.
+
+12. MVP LOCAL COM BROADCASTCHANNEL — IMPLEMENTAÇÃO ATUAL
+-------------------------------------------------------
+O escopo atual do MVP foi atualizado: ele funciona somente no navegador, sem
+Firebase, servidor Node.js, contas reais ou comunicação pela internet. Esta
+decisão substitui temporariamente a recomendação anterior de implementar salas
+online com backend.
+
+Implementado no código:
+- src/lib/tableChannel.ts cria um canal BroadcastChannel por aba. Eventos têm
+  versão, tipo, ID único, ID da origem e data de envio; eventos da própria aba e
+  IDs já vistos são ignorados. Eventos recebidos atualizam estado sem serem
+  republicados. O canal é encerrado no cleanup do componente.
+- src/App.tsx publica mensagens de chat e rolagens, alterações gerais de tokens,
+  movimentos finais de tokens, notas, iniciativa e permissão local de desenho.
+- O arraste atualiza a posição visual/local; o BroadcastChannel recebe somente
+  a posição final ao soltar o token.
+- Se BroadcastChannel estiver ausente ou falhar ao abrir, a mesa continua nesta
+  aba e exibe uma mensagem de limitação.
+- A interface chama o modo de “mesa local” e informa que sincroniza abas do mesmo
+  navegador/origem, sem conectar computadores diferentes.
+- Chat é identificado por um nome configurável por aba. As últimas 300
+  mensagens ficam em localStorage; o histórico é uma demonstração local, não um
+  serviço de chat online.
+- O rolador é d10 com modificador. Resultado natural 10 soma um d10 adicional;
+  resultado natural 1 subtrai um d10 adicional. O chat registra natural, dado
+  adicional, modificador, total e destaque visual de crítico.
+- Iniciativa e notas ficam em localStorage e são propagadas às abas ativas.
+- PDFs e imagens são guardados em IndexedDB no navegador; URL.createObjectURL é
+  usada somente para visualização. Arquivos não são enviados pelo canal nem
+  gravados como base64 no localStorage. PDF é selecionado por aba.
+- Imagens de tokens podem ser carregadas para personagens. Imagens base64 de
+  versões anteriores são migradas para IndexedDB quando possível.
+
+Limites:
+- BroadcastChannel só funciona em documentos compatíveis na mesma origem e no
+  mesmo contexto de navegador. Não é multiplayer pela internet.
+- A interface de Mestre/Jogador é uma simulação visual, sem autenticação ou
+  autorização segura.
+- PDFs e imagens são locais; não aparecem automaticamente na máquina de outra
+  pessoa ou em outro navegador.
+- Não há presença online, sincronização de desenho, voz, armazenamento em nuvem,
+  resolução de conflitos avançada ou garantia de entrega se uma aba estiver
+  fechada.
+- Movimento local durante o arraste ainda atualiza o estado React/localStorage;
+  somente a comunicação entre abas é limitada ao destino final.
+
+Verificação:
+- Confirmar abrindo duas abas com o mesmo endereço no mesmo navegador: enviar
+  mensagem, rolar dado, mover token, alterar iniciativa e notas.
+- Verificar ausência de eco/duplicação, persistência após recarregar, PDF e
+  imagem após reabrir a página, e aviso quando BroadcastChannel não estiver
+  disponível.
+- A compilação/build deve ser executada quando as dependências do projeto
+  estiverem instaladas.
+
+FIM
