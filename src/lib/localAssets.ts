@@ -1,4 +1,4 @@
-export type LocalAssetKind = "sheet-pdf" | "token-image";
+export type LocalAssetKind = "sheet-pdf" | "token-image" | "map-image";
 
 export type LocalAsset = {
   id: string;

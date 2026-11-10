@@ -5,6 +5,9 @@ export type TableEventType =
   | "scene.upsert"
   | "scene.delete"
   | "chat.message"
+  | "chat.clear"
+  | "map.queue"
+  | "map.attack"
   | "gm.notes"
   | "gm.initiative"
   | "gm.drawing-permission";

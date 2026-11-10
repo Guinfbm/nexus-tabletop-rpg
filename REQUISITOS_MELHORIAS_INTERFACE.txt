@@ -4,10 +4,10 @@ NEXUS // TABLE — REQUISITOS DE MELHORIAS DA INTERFACE
 Objetivo
 --------
 Consolidar os ajustes solicitados para o painel de ficha, gerenciamento de
-tokens, medição do mapa e rolagem de dados. Este arquivo descreve o resultado
-esperado e uma direção de implementação. As alterações foram aplicadas em
-`src/App.tsx` e `src/index.css`; este arquivo permanece como referência de
-escopo e critérios de aceite.
+tokens, mapas/cenas, medição, rolagem de dados e chat. Este arquivo registra os
+requisitos e critérios de aceite; as funcionalidades das seções 8 a 10 foram
+implementadas em `src/App.tsx`, `src/index.css` e nos módulos de persistência e
+sincronização em `src/lib/`.
 
 
 1. PAINEL DA FICHA DE PERSONAGEM
@@ -21,6 +21,20 @@ escopo e critérios de aceite.
   visualização.
 - Confirmar que a ficha continua ocupando a área disponível quando o painel
   lateral é redimensionado ou maximizado.
+
+
+1.1 ESTABILIDADE DO MAPA E BARRA SUPERIOR
+-----------------------------------------
+- Manter a área do mapa estável ao trocar entre Chat, Dados, Ficha e Áudio.
+  A mudança de conteúdo do painel lateral não deve alterar a proporção, escala,
+  posição ou dimensões internas do mapa de forma inesperada.
+- Reservar uma largura mínima utilizável para o mapa e impedir que os controles
+  do painel lateral causem overflow ou deformem a área de jogo.
+- Ajustar espaçamento, padding e comportamento responsivo da barra superior
+  para que o seletor de unidade, as opções de grid e os demais controles não
+  sejam cortados em telas estreitas ou com o painel redimensionado.
+- Permitir quebra ou reorganização dos controles em telas menores sem cobrir o
+  mapa nem esconder o seletor de unidade.
 
 
 2. GERENCIAMENTO DE TOKENS
@@ -64,6 +78,11 @@ escopo e critérios de aceite.
   a preferência localmente.
 - Não alterar a posição dos tokens nem a escala visual do mapa ao mudar apenas
   a unidade exibida.
+- Usar uma escala proporcional consistente: cada célula equivale a 5 ft ou
+  1,524 m. Ao alternar unidades, converter o rótulo sem alterar a distância
+  física representada pela célula.
+- A régua deve converter a distância medida com precisão suficiente para a
+  unidade escolhida e informar a unidade no próprio rótulo.
 
 
 4. SISTEMA DE ROLAGEM DE DADOS
@@ -95,9 +114,34 @@ escopo e critérios de aceite.
 - Em críticos do d10 de Cyberpunk RED, manter o resultado e a indicação de
   sucesso/falha crítica em uma única mensagem do chat, preservando a conta de
   forma legível.
+- Validar a matemática para evitar resultados negativos inesperados. O dado
+  deve permanecer dentro do intervalo de faces selecionado e o modificador deve
+  ser um inteiro válido.
+- Definir explicitamente o tratamento de totais abaixo de zero: rolagens
+  convencionais não devem produzir negativos por erro de cálculo; se uma regra
+  especial permitir um total negativo, como a falha crítica do d10, aplicar
+  essa regra de forma deliberada e exibi-la claramente.
 
 
-5. DIREÇÃO DE IMPLEMENTAÇÃO
+5. PERMISSÕES DE TOKENS
+-----------------------
+- O Mestre pode mover, editar e atribuir a posse de qualquer token.
+- Um jogador só pode mover um token ou alterar seus status quando for o criador
+  ou quando o Mestre tiver atribuído explicitamente a posse daquele token.
+- Tokens sem posse atribuída ficam apenas para visualização pelos jogadores.
+- Associar cada token a um identificador de proprietário estável da sessão;
+  permitir ao Mestre atribuir, trocar ou remover essa posse pela interface.
+- Aplicar a regra de permissão tanto no início do arraste quanto em todos os
+  controles de edição de status, tamanho, nome, cor e imagem.
+- Mostrar claramente quando um token está bloqueado e quem é seu proprietário.
+- Persistir e sincronizar a posse com os demais dados do token entre abas da
+  mesma origem e do mesmo navegador.
+- A interface atual não tem autenticação nem servidor. Essas regras no cliente
+  organizam uma mesa local, mas não constituem controle de acesso seguro para
+  partidas entre dispositivos. Segurança real exige validação no backend.
+
+
+6. DIREÇÃO DE IMPLEMENTAÇÃO
 ---------------------------
 - HTML/React: usar controles nativos acessíveis (`select`, `input type="range"`,
   campos numéricos/texto e botões com rótulos claros).
@@ -108,11 +152,17 @@ escopo e critérios de aceite.
   unidades da renderização da interface; validar valores ao confirmar; persistir
   preferências e tamanhos no armazenamento local; e sincronizar alterações
   somente entre abas da mesma origem e navegador.
+- Layout: manter o mapa em uma coluna flexível com largura mínima e fazer a
+  barra superior reorganizar controles em telas estreitas, sem depender da aba
+  atualmente aberta no painel lateral.
+- Permissões locais: centralizar uma função de autorização que receba o papel
+  atual e o proprietário do token; usá-la para habilitar ou bloquear arraste e
+  edição. O Mestre pode alterar a posse; jogadores não podem atribuí-la a si.
 - A sincronização descrita é local. Multiplayer entre computadores exige um
   serviço remoto e não faz parte deste escopo.
 
 
-6. CRITÉRIOS DE ACEITE
+7. CRITÉRIOS DE ACEITE
 ----------------------
 - O PDF preenche a altura disponível e permanece utilizável ao redimensionar
   ou maximizar o painel.
@@ -127,3 +177,115 @@ escopo e critérios de aceite.
 - O seletor oferece d1 a d100; a animação não duplica rolagens; e o resultado
   segue o formato pedido, incluindo modificadores positivo, negativo e zero.
 - A regra crítica permanece específica ao d10 de Cyberpunk RED.
+- Alternar repetidamente as abas laterais e redimensionar o painel não deforma
+  nem desloca o mapa de modo inesperado.
+- Os controles da barra superior permanecem visíveis e utilizáveis em desktop
+  e telas estreitas.
+- Grid e régua representam a mesma escala física em ft e m, com células de
+  5 ft equivalentes a 1,524 m.
+- Testar modificadores positivos, zero e negativos em vários dados; confirmar
+  que somente regras explícitas podem produzir totais abaixo de zero.
+- Um jogador consegue editar apenas tokens próprios ou atribuídos pelo Mestre;
+  o Mestre consegue atribuir e revogar posse; a restrição se aplica a movimento
+  e a todos os controles de edição.
+
+
+8. MELHORIAS ADICIONAIS — TOKENS, MAPAS E CHAT
+---------------------------------------------
+
+8.1 Customização de tokens
+- Remover todas as bordas e contornos visíveis dos tokens no mapa, mantendo os
+  formatos e as cores de preenchimento.
+- Incluir nas configurações do token um controle para mostrar ou ocultar o nome
+  do personagem abaixo dele. Salvar essa opção por token.
+- Permitir editar os valores atuais e máximos das barras de status. Durante a
+  digitação, aceitar campos vazios temporários; confirmar ao pressionar Enter ou
+  sair do campo, validar inteiros e manter o último valor válido se a entrada
+  for inválida. Limitar o valor atual ao máximo configurado.
+
+8.2 Fila de mapas e câmera
+- Permitir ao Mestre adicionar imagens de fundo para cenas de combate.
+- Criar uma fila persistente de mapas com nome, seleção do mapa ativo, remoção e
+  opção para carregar várias imagens de uma vez.
+- Exibir o mapa ativo como fundo do grid da mesa e trocar esse fundo ao selecionar
+  outro item da fila.
+- Permitir pan por arraste e manter zoom acessível pelos controles existentes.
+  O grid, a imagem e os elementos do mapa devem se mover juntos; posições de
+  tokens e medições precisam continuar alinhadas após pan e zoom.
+- Guardar as imagens no IndexedDB e os metadados da fila no armazenamento local.
+  Sincronizar seleção e fila entre abas do mesmo navegador; partidas entre
+  dispositivos exigem um serviço remoto e estão fora deste escopo.
+
+8.3 Rolagem de múltiplos dados
+- Permitir montar uma jogada com até seis grupos de dados, informando a
+  quantidade e o tipo de cada grupo (por exemplo, 2d6 + 1d10).
+- Aceitar de 1 a 20 dados por grupo e tipos de d1 a d100. Aplicar o modificador
+  uma única vez ao total combinado.
+- Mostrar os resultados individuais por grupo, a soma dos grupos, o modificador
+  e o total final em uma mensagem única do chat.
+- Manter a regra especial de crítico do Cyberpunk RED para cada d10 da jogada,
+  identificando sucessos e falhas críticas e mantendo explícito qualquer total
+  negativo que decorra dessa regra. Totais negativos de rolagens convencionais
+  devem continuar limitados a zero com indicação do limite aplicado.
+- Manter a animação durante a rolagem, desativar controles enquanto ela ocorre e
+  respeitar a preferência por movimento reduzido.
+
+8.4 Limpeza do chat
+- Adicionar ao Mestre um botão para limpar o histórico de mensagens da mesa.
+- Pedir confirmação antes da remoção, atualizar o armazenamento local e
+  sincronizar a limpeza entre abas abertas da mesma origem.
+
+9. CRITÉRIOS DE ACEITE ADICIONAIS
+---------------------------------
+- Tokens não exibem borda, contorno ou halo que pareça uma borda; o nome abaixo
+  pode ser ocultado e exibido individualmente, inclusive após recarregar.
+- Os valores atual e máximo de cada barra podem ser substituídos completamente;
+  campos vazios ou inválidos não corrompem o status.
+- O Mestre consegue carregar uma ou várias imagens, ver a fila, ativar qualquer
+  mapa, remover mapas e recuperar a fila após recarregar a página.
+- A imagem ativa é aplicada ao fundo da mesa e a escolha se propaga para outras
+  abas do navegador.
+- No modo Mover mapa, arrastar o grid desloca a câmera sem mover tokens; zoom,
+  régua, tokens e elementos de cenário permanecem alinhados com a cena.
+- É possível combinar quantidades e tipos diferentes de dados numa jogada; cada
+  dado é lançado dentro de suas faces, o modificador é aplicado uma vez e o
+  resumo completo chega ao chat em uma mensagem.
+- O Mestre consegue limpar o chat após confirmação e a limpeza aparece nas outras
+  abas da mesa.
+
+
+10. CUSTOMIZAÇÃO DE BORDA E ATAQUE VISUAL
+-----------------------------------------
+- Adicionar, nas configurações de cada token, um seletor de estilo com as opções
+  “Com borda” e “Sem borda”. O padrão é “Sem borda”; salvar a escolha junto aos
+  dados do token para que persista após recarregar a mesa.
+- Disponibilizar um botão rápido no painel do token para mostrar ou ocultar o
+  nome abaixo dele, mantendo o mesmo estado sincronizado com a opção nas
+  configurações de identidade.
+- Manter no painel de status a edição direta do valor atual e do máximo de cada
+  barra, permitindo apagar o conteúdo durante a digitação e confirmar o valor
+  ao sair do campo ou pressionar Enter.
+- Implementar ataque visual: selecionar o token atacante com o botão esquerdo e
+  clicar com o botão direito em outro token para exibir um feixe/tiro vermelho
+  que percorre a distância entre os dois e um efeito breve de impacto no alvo.
+  Se nenhum atacante estiver selecionado, o primeiro clique direito em token
+  controlado seleciona o atacante e informa como escolher o alvo.
+- Respeitar permissões: jogadores só iniciam o efeito com token próprio ou cuja
+  posse foi atribuída pelo Mestre; o Mestre pode usar qualquer token. O efeito
+  não altera automaticamente vida, status ou regras de combate.
+- Não iniciar ataques durante os modos de régua, desenho, edição de cenário ou
+  movimentação panorâmica. Respeitar a preferência do sistema por movimento
+  reduzido e sincronizar a apresentação entre abas abertas da mesma mesa.
+
+10.1 CRITÉRIOS DE ACEITE
+-----------------------
+- Cada token pode alternar entre borda visível e sem borda; token novo começa
+  sem borda e a configuração escolhida continua após recarregar.
+- O botão rápido de nome atualiza imediatamente a visibilidade do nome no mapa
+  e reflete o mesmo valor do controle em Identidade do token.
+- O feixe vermelho parte da posição do atacante e termina no alvo; outro token
+  pode ser selecionado como alvo sem conceder permissão para editá-lo.
+- Jogadores sem posse não conseguem usar um token bloqueado como atacante; o
+  Mestre pode fazê-lo. Ataques são apenas efeitos visuais e não causam dano.
+- O efeito desaparece após a animação e a preferência por movimento reduzido
+  evita a animação de deslocamento.

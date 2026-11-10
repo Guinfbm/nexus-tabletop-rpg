@@ -183,12 +183,35 @@ type Token = {
   bars: StatusBar[];
   enemy?: boolean;
   owner?: string;
+  ownerId?: string;
   image?: string;
   imageAssetId?: string;
   shape?: "circle" | "square" | "hex";
   size?: "small" | "medium" | "large";
   sizePx?: number;
+  showName?: boolean;
+  borderStyle?: "none" | "bordered";
   hidden?: boolean;
+};
+type MapScene = { id: string; name: string; assetId: string };
+type DiceTerm = { id: string; count: number; sides: number };
+type DicePoolGroup = { term: DiceTerm; rolls: DieRoll[]; total: number };
+type DicePoolRoll = {
+  groups: DicePoolGroup[];
+  modifier: number;
+  rawTotal: number;
+  total: number;
+  criticalSuccess: boolean;
+  criticalFailure: boolean;
+};
+type MapQueuePayload = { scenes: MapScene[]; activeMapId: string | null };
+type AttackEffect = {
+  id: string;
+  startX: number;
+  startY: number;
+  endX: number;
+  endY: number;
+  animated: boolean;
 };
 type SceneElement = {
   id: string;
@@ -225,6 +248,32 @@ function uniqueId(): string {
   return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+function ownerIdentity(name?: string): string | undefined {
+  const normalized = name
+    ?.normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLocaleLowerCase("pt-BR");
+  return normalized || undefined;
+}
+
+function tokenOwnerId(token: Token): string | undefined {
+  return token.ownerId || ownerIdentity(token.owner);
+}
+
+function normalizeTokenOwner(token: Token): Token {
+  const owner = token.owner ||
+    (token.name === "Nyx" || token.name === "Kade" || token.name === "Vex" ? token.name : token.ownerId);
+  return {
+    ...token,
+    owner,
+    ownerId: token.ownerId || ownerIdentity(owner),
+    showName: token.showName ?? true,
+    borderStyle: token.borderStyle || "none",
+  };
+}
+
 function initialsFromName(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean);
   return (parts.length > 1 ? `${parts[0][0]}${parts[1][0]}` : parts[0]?.slice(0, 2) || "?").toUpperCase();
@@ -251,21 +300,98 @@ function rollCyberpunkRed(modifier: number, random = Math.random): CyberpunkRedR
   return { natural, modifier: safeModifier, extraDie, total, critical };
 }
 
-type DieRoll = CyberpunkRedRoll & { sides: number };
+type DieRoll = CyberpunkRedRoll & { sides: number; rawTotal: number };
 
 function rollDie(sides: number, modifier: number, random = Math.random): DieRoll {
   const safeSides = Math.max(1, Math.min(100, Math.trunc(Number.isFinite(sides) ? sides : 10)));
-  const safeModifier = Math.trunc(Number.isFinite(modifier) ? modifier : 0);
-  if (safeSides === 10) return { ...rollCyberpunkRed(safeModifier, random), sides: safeSides };
+  const safeModifier = Number.isFinite(modifier)
+    ? Math.max(-1_000_000, Math.min(1_000_000, Math.trunc(modifier)))
+    : 0;
+  if (safeSides === 10) {
+    const redRoll = rollCyberpunkRed(safeModifier, random);
+    const rawTotal = redRoll.total;
+    return {
+      ...redRoll,
+      total: redRoll.critical === "failure" ? rawTotal : Math.max(0, rawTotal),
+      rawTotal,
+      sides: safeSides,
+    };
+  }
   const sample = random();
   const natural = Number.isFinite(sample)
     ? Math.max(1, Math.min(safeSides, Math.floor(sample * safeSides) + 1))
     : 1;
-  return { natural, modifier: safeModifier, total: natural + safeModifier, sides: safeSides };
+  const rawTotal = natural + safeModifier;
+  return {
+    natural,
+    modifier: safeModifier,
+    total: Math.max(0, rawTotal),
+    rawTotal,
+    sides: safeSides,
+  };
 }
 
 function formatDistance(feet: number, unit: "ft" | "m"): string {
-  return unit === "ft" ? `${feet} ft` : `${Number((feet * 0.3048).toFixed(2))} m`;
+  const distance = unit === "ft" ? feet : feet * 0.3048;
+  const rounded = unit === "ft" ? Number(distance.toFixed(1)) : Number(distance.toFixed(3));
+  return `${rounded} ${unit}`;
+}
+
+function normalizeDiceTerms(value: unknown, fallbackSides = 10): DiceTerm[] {
+  if (Array.isArray(value)) {
+    const terms = value
+      .filter((term): term is Record<string, unknown> => !!term && typeof term === "object")
+      .slice(0, 6)
+      .map((term) => ({
+        id: typeof term.id === "string" && term.id ? term.id : uniqueId(),
+        count: Math.max(1, Math.min(20, Math.trunc(Number(term.count) || 1))),
+        sides: Math.max(1, Math.min(100, Math.trunc(Number(term.sides) || 10))),
+      }));
+    if (terms.length) return terms;
+  }
+  return [{ id: uniqueId(), count: 1, sides: fallbackSides }];
+}
+
+function rollDicePool(terms: DiceTerm[], modifier: number, random = Math.random): DicePoolRoll {
+  const safeModifier = Number.isFinite(modifier)
+    ? Math.max(-1_000_000, Math.min(1_000_000, Math.trunc(modifier)))
+    : 0;
+  const groups = normalizeDiceTerms(terms).map((term) => {
+    const rolls = Array.from({ length: term.count }, () => rollDie(term.sides, 0, random));
+    return { term, rolls, total: rolls.reduce((sum, roll) => sum + roll.total, 0) };
+  });
+  const criticalFailure = groups.some((group) => group.rolls.some((roll) => roll.critical === "failure"));
+  const criticalSuccess = groups.some((group) => group.rolls.some((roll) => roll.critical === "success"));
+  const rawTotal = groups.reduce((sum, group) => sum + group.total, 0) + safeModifier;
+  return {
+    groups,
+    modifier: safeModifier,
+    rawTotal,
+    total: criticalFailure ? rawTotal : Math.max(0, rawTotal),
+    criticalSuccess,
+    criticalFailure,
+  };
+}
+
+function formatSignedSum(values: number[]): string {
+  const [first = 0, ...rest] = values;
+  return `${first}${rest.map((value) => value < 0 ? ` − ${Math.abs(value)}` : ` + ${value}`).join("")}`;
+}
+
+function formatDieFace(roll: DieRoll): string {
+  if (roll.extraDie === undefined) return String(roll.natural);
+  return `${roll.natural}${roll.critical === "failure" ? " − " : " + "}${roll.extraDie}`;
+}
+
+function normalizeMapScenes(value: unknown): MapScene[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((scene): scene is MapScene =>
+    !!scene &&
+    typeof scene === "object" &&
+    typeof scene.id === "string" &&
+    typeof scene.name === "string" &&
+    typeof scene.assetId === "string",
+  );
 }
 
 function sizePixels(size?: Token["size"], sizePx?: number): number {
@@ -365,31 +491,46 @@ function App() {
   });
   const [sidePanelExpanded, setSidePanelExpanded] = useState(false);
   const [mapZoom, setMapZoom] = useState(1);
+  const [mapPan, setMapPan] = useState({ x: 0, y: 0 });
+  const [panActive, setPanActive] = useState(false);
+  const [isPanning, setIsPanning] = useState(false);
   const [pdfZoom, setPdfZoom] = useState(1);
+  const [mapScenes, setMapScenes] = useState<MapScene[]>(() => {
+    try {
+      return normalizeMapScenes(JSON.parse(localStorage.getItem("nexus-table-map-queue") || "[]"));
+    } catch {
+      return [];
+    }
+  });
+  const [activeMapId, setActiveMapId] = useState<string | null>(() =>
+    localStorage.getItem("nexus-table-active-map") || null,
+  );
+  const [mapSceneUrls, setMapSceneUrls] = useState<Record<string, string>>({});
+  const [mapSceneError, setMapSceneError] = useState("");
   const [tokens, setTokens] = useState<Token[]>(() => {
     try {
       const saved = JSON.parse(
         localStorage.getItem("nexus-table-tokens") || localStorage.getItem("nexus-tokens") || "",
       ) as Token[];
-      return saved.map((token) => ({
-        ...token,
-        image: token.image?.startsWith("blob:") ? undefined : token.image,
-        bars: token.bars?.length ? token.bars : createStatusBars(token.hp || 20),
-        shape: token.shape || (token.enemy ? "square" : "circle"),
-        size: token.size || "medium",
-        sizePx: sizePixels(token.size, token.sizePx),
-        owner:
-          token.owner ||
-          (token.name === "Nyx" || token.name === "Kade" || token.name === "Vex"
-            ? token.name
-            : undefined),
-      }));
+      return saved.map((savedToken) => {
+        const token = normalizeTokenOwner(savedToken);
+        return {
+          ...token,
+          image: token.image?.startsWith("blob:") ? undefined : token.image,
+          bars: token.bars?.length ? token.bars : createStatusBars(token.hp || 20),
+          shape: token.shape || (token.enemy ? "square" : "circle"),
+          size: token.size || "medium",
+          sizePx: sizePixels(token.size, token.sizePx),
+        };
+      });
     } catch {
-      return initialTokens;
+      return initialTokens.map(normalizeTokenOwner);
     }
   });
   const [dragVisual, setDragVisual] = useState<{ id: number; x: number; y: number } | null>(null);
   const [selectedTokenId, setSelectedTokenId] = useState<number | null>(null);
+  const [attackEffect, setAttackEffect] = useState<AttackEffect | null>(null);
+  const [attackHint, setAttackHint] = useState("");
   const [showAllBars, setShowAllBars] = useState(false);
   const [rulerActive, setRulerActive] = useState(false);
   const [measurement, setMeasurement] = useState<Measurement | null>(null);
@@ -425,6 +566,7 @@ function App() {
   });
   const [newBarName, setNewBarName] = useState("");
   const [maxDrafts, setMaxDrafts] = useState<Record<string, string>>({});
+  const [valueDrafts, setValueDrafts] = useState<Record<string, string>>({});
   const [messages, setMessages] = useState<Message[]>(() => {
     try {
       return JSON.parse(localStorage.getItem("nexus-table-messages") || "") as Message[];
@@ -434,9 +576,19 @@ function App() {
   });
   const [message, setMessage] = useState("");
   const [modifier, setModifier] = useState(0);
-  const [dieSides, setDieSides] = useState(() => {
-    const saved = Number(localStorage.getItem("nexus-table-die-sides"));
-    return Number.isInteger(saved) && saved >= 1 && saved <= 100 ? saved : 10;
+  const [diceCountDrafts, setDiceCountDrafts] = useState<Record<string, string>>({});
+  const [diceTerms, setDiceTerms] = useState<DiceTerm[]>(() => {
+    const savedSides = Number(localStorage.getItem("nexus-table-die-sides"));
+    let savedTerms: unknown;
+    try {
+      savedTerms = JSON.parse(localStorage.getItem("nexus-table-dice-terms") || "null");
+    } catch {
+      savedTerms = null;
+    }
+    return normalizeDiceTerms(
+      savedTerms,
+      Number.isInteger(savedSides) && savedSides >= 1 && savedSides <= 100 ? savedSides : 10,
+    );
   });
   const [isRolling, setIsRolling] = useState(false);
   const [mapUnit, setMapUnit] = useState<"ft" | "m">(() =>
@@ -477,10 +629,13 @@ function App() {
     }
   });
   const mapRef = useRef<HTMLDivElement>(null);
+  const mapPanDragRef = useRef<{ pointerId: number; x: number; y: number; originX: number; originY: number } | null>(null);
   const dragRef = useRef<number | null>(null);
   const dragPositionRef = useRef<{ x: number; y: number } | null>(null);
   const dragStartPositionRef = useRef<{ x: number; y: number } | null>(null);
   const sceneElementsRef = useRef(sceneElements);
+  const mapScenesRef = useRef(mapScenes);
+  const mapSceneUrlsRef = useRef<Record<string, string>>({});
   const sceneDragRef = useRef<string | null>(null);
   const sceneDragPositionRef = useRef<{ x: number; y: number } | null>(null);
   const sceneDragStartRef = useRef<{ x: number; y: number } | null>(null);
@@ -536,6 +691,26 @@ function App() {
     setSceneElements(next);
   };
   const publish = <T,>(type: TableEvent["type"], payload: T) => channelRef.current?.publish(type, payload);
+  const persistMapQueue = (nextScenes: MapScene[], nextActiveMapId: string | null, broadcast = true) => {
+    const sceneIds = new Set(nextScenes.map((scene) => scene.id));
+    for (const scene of mapScenesRef.current) {
+      if (sceneIds.has(scene.id)) continue;
+      void removeLocalAsset(scene.assetId).catch(() => undefined);
+      const url = mapSceneUrlsRef.current[scene.id];
+      if (url) releaseObjectUrl(url);
+    }
+    mapSceneUrlsRef.current = Object.fromEntries(
+      Object.entries(mapSceneUrlsRef.current).filter(([sceneId]) => sceneIds.has(sceneId)),
+    );
+    setMapSceneUrls(mapSceneUrlsRef.current);
+    mapScenesRef.current = nextScenes;
+    setMapScenes(nextScenes);
+    const active = nextScenes.some((scene) => scene.id === nextActiveMapId)
+      ? nextActiveMapId
+      : nextScenes[0]?.id ?? null;
+    setActiveMapId(active);
+    if (broadcast) publish("map.queue", { scenes: nextScenes, activeMapId: active } satisfies MapQueuePayload);
+  };
   const addMessage = (nextMessage: Message, broadcast = true) => {
     if (seenMessageIdsRef.current.has(nextMessage.id)) return;
     seenMessageIdsRef.current.add(nextMessage.id);
@@ -546,6 +721,14 @@ function App() {
     messagesRef.current = [...messagesRef.current, nextMessage].slice(-300);
     setMessages(messagesRef.current);
     if (broadcast) publish("chat.message", nextMessage);
+  };
+  const clearChat = () => {
+    if (currentRole !== "gm" || !window.confirm("Limpar todas as mensagens do chat desta mesa?")) return;
+    messagesRef.current = [];
+    setMessages([]);
+    seenMessageIdsRef.current.clear();
+    localStorage.setItem("nexus-table-messages", "[]");
+    publish("chat.clear", { clearedAt: Date.now() });
   };
 
   useEffect(() => {
@@ -569,6 +752,13 @@ function App() {
     localStorage.setItem("nexus-table-messages", JSON.stringify(messages.slice(-300)));
   }, [messages]);
   useEffect(() => {
+    localStorage.setItem("nexus-table-map-queue", JSON.stringify(mapScenes));
+  }, [mapScenes]);
+  useEffect(() => {
+    if (activeMapId) localStorage.setItem("nexus-table-active-map", activeMapId);
+    else localStorage.removeItem("nexus-table-active-map");
+  }, [activeMapId]);
+  useEffect(() => {
     initiativeRef.current = initiative;
     localStorage.setItem("nexus-table-initiative", JSON.stringify(initiative));
     if (suppressSharedEffectRef.current.initiative) suppressSharedEffectRef.current.initiative = false;
@@ -580,16 +770,21 @@ function App() {
     [sceneElements],
   );
   useEffect(() => localStorage.setItem("nexus-table-panel-width", String(sidePanelWidth)), [sidePanelWidth]);
-  useEffect(() => localStorage.setItem("nexus-table-die-sides", String(dieSides)), [dieSides]);
+  useEffect(() => {
+    localStorage.setItem("nexus-table-dice-terms", JSON.stringify(diceTerms));
+    localStorage.setItem("nexus-table-die-sides", String(diceTerms[0]?.sides ?? 10));
+  }, [diceTerms]);
   useEffect(() => localStorage.setItem("nexus-table-map-unit", mapUnit), [mapUnit]);
   useEffect(() => {
     const onStorage = (event: StorageEvent) => {
       if (event.key === "nexus-table-map-unit" && (event.newValue === "ft" || event.newValue === "m")) {
         setMapUnit((current) => current === event.newValue ? current : event.newValue as "ft" | "m");
-      } else if (event.key === "nexus-table-die-sides") {
-        const sides = Number(event.newValue);
-        if (Number.isInteger(sides) && sides >= 1 && sides <= 100) {
-          setDieSides((current) => current === sides ? current : sides);
+      } else if (event.key === "nexus-table-dice-terms" && event.newValue) {
+        try {
+          const terms = normalizeDiceTerms(JSON.parse(event.newValue));
+          setDiceTerms((current) => JSON.stringify(current) === JSON.stringify(terms) ? current : terms);
+        } catch {
+          // Configurações incompatíveis de outra aba são ignoradas.
         }
       }
     };
@@ -648,7 +843,7 @@ function App() {
     // Eventos recebidos só atualizam esta aba: eles nunca são publicados de novo.
     const unsubscribe = channel.subscribe((event: TableEvent) => {
       if (event.type === "token.upsert") {
-        const token = event.payload as Token;
+        const token = normalizeTokenOwner(event.payload as Token);
         const next = tokensRef.current.some((item) => item.id === token.id)
           ? tokensRef.current.map((item) => (item.id === token.id ? token : item))
           : [...tokensRef.current, token];
@@ -701,6 +896,15 @@ function App() {
         const incoming = event.payload as Message;
         addMessage(incoming, false);
         if (incoming.kind === "roll" && incoming.roll) setLastRoll(incoming.roll.total);
+      } else if (event.type === "chat.clear") {
+        messagesRef.current = [];
+        setMessages([]);
+        seenMessageIdsRef.current.clear();
+      } else if (event.type === "map.queue") {
+        const queue = event.payload as MapQueuePayload;
+        persistMapQueue(normalizeMapScenes(queue.scenes), queue.activeMapId, false);
+      } else if (event.type === "map.attack") {
+        presentAttack(event.payload as AttackEffect);
       } else if (event.type === "gm.notes") {
         const value = String(event.payload ?? "");
         if (notesRef.current !== value) {
@@ -807,9 +1011,48 @@ function App() {
     };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    for (const scene of mapScenes) {
+      if (mapSceneUrlsRef.current[scene.id]) continue;
+      void getLocalAsset(scene.assetId).then((asset) => {
+        if (!asset || cancelled || !mapScenesRef.current.some((item) => item.id === scene.id)) return;
+        if (mapSceneUrlsRef.current[scene.id]) return;
+        const url = createObjectUrl(asset.blob);
+        mapSceneUrlsRef.current = { ...mapSceneUrlsRef.current, [scene.id]: url };
+        setMapSceneUrls(mapSceneUrlsRef.current);
+      }).catch(() => {
+        if (!cancelled) setMapSceneError(`Não foi possível carregar o mapa “${scene.name}”.`);
+      });
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [mapScenes]);
+
   const players = useMemo(() => tokens.filter((t) => !t.enemy && !t.hidden), [tokens]);
   const reservedTokens = useMemo(() => tokens.filter((token) => token.hidden), [tokens]);
   const canDraw = currentRole === "gm" || playersCanDraw;
+  const activeMap = mapScenes.find((scene) => scene.id === activeMapId);
+  const activeMapUrl = activeMap ? mapSceneUrls[activeMap.id] : undefined;
+  const diceSummary = diceTerms.map((term) => `${term.count}d${term.sides}`).join(" + ");
+  const playerOwnerId = ownerIdentity(playerName);
+  const ownerOptions = useMemo(() => {
+    const choices = new Map<string, string>();
+    for (const token of tokens) {
+      const name = token.owner || (!token.enemy && !token.hidden ? token.name : undefined);
+      const id = ownerIdentity(name);
+      if (id && name) choices.set(id, name);
+    }
+    const currentName = playerName.trim();
+    const currentId = ownerIdentity(currentName);
+    if (currentId && currentName) choices.set(currentId, currentName);
+    return [...choices.entries()].map(([id, name]) => ({ id, name }));
+  }, [tokens, playerName]);
+
+  function canEditToken(token: Token): boolean {
+    return currentRole === "gm" || (!!playerOwnerId && tokenOwnerId(token) === playerOwnerId);
+  }
 
   function sendMessage() {
     if (!message.trim()) return;
@@ -822,33 +1065,39 @@ function App() {
     setMessage("");
   }
 
-  function publishRoll(result: DieRoll) {
+  function publishRoll(result: DicePoolRoll) {
     setLastRoll(result.total);
-    const extraOperation = result.extraDie === undefined
-      ? ""
-      : ` ${result.critical === "failure" ? "−" : "+"} ${result.extraDie}`;
-    const modifierOperation = result.modifier < 0
-      ? ` − ${Math.abs(result.modifier)}`
-      : ` + ${result.modifier}`;
-    const status = result.critical === "success"
-      ? " • SUCESSO CRÍTICO"
-      : result.critical === "failure"
-        ? " • FALHA CRÍTICA"
-        : "";
+    const breakdown = result.groups.map(({ term, rolls, total }) =>
+      `${term.count}d${term.sides} [${rolls.map(formatDieFace).join(", ")}] = ${total}`,
+    ).join(" • ");
+    const status = [
+      result.criticalSuccess ? "SUCESSO CRÍTICO d10" : "",
+      result.criticalFailure ? "FALHA CRÍTICA d10" : "",
+    ].filter(Boolean).join(" • ");
+    const floorNote = result.total !== result.rawTotal
+      ? ` → ${result.total} (mínimo 0 aplicado)`
+      : "";
+    const firstRoll = result.groups[0]?.rolls[0];
+    const critical = result.criticalFailure ? "failure" : result.criticalSuccess ? "success" : undefined;
     addMessage({
       id: uniqueId(),
       author: playerName.trim() || "Jogador",
-      text: `d${result.sides}: ${result.natural}${extraOperation}${modifierOperation} = ${result.total}${status}`,
+      text: `${breakdown} | ${formatSignedSum([...result.groups.map((group) => group.total), result.modifier])} = ${result.rawTotal}${floorNote}${status ? ` • ${status}` : ""}`,
       time: new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }),
       kind: "roll",
-      critical: result.critical,
-      roll: { natural: result.natural, modifier: result.modifier, extraDie: result.extraDie, total: result.total },
+      critical,
+      roll: {
+        natural: firstRoll?.natural ?? 0,
+        modifier: result.modifier,
+        extraDie: firstRoll?.extraDie,
+        total: result.total,
+      },
     });
   }
 
   function rollDice() {
     if (isRolling) return;
-    const result = rollDie(dieSides, modifier);
+    const result = rollDicePool(diceTerms, modifier);
     const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
     if (reduceMotion) {
       publishRoll(result);
@@ -867,8 +1116,8 @@ function App() {
     const rect = mapRef.current.getBoundingClientRect();
     const width = rect.width * mapZoom;
     const height = rect.height * mapZoom;
-    const pixelX = (clientX - rect.left - (rect.width - width) / 2) / mapZoom;
-    const pixelY = (clientY - rect.top - (rect.height - height) / 2) / mapZoom;
+    const pixelX = (clientX - rect.left - (rect.width - width) / 2 - mapPan.x) / mapZoom;
+    const pixelY = (clientY - rect.top - (rect.height - height) / 2 - mapPan.y) / mapZoom;
     return {
       x: Math.max(0, Math.min(100, (pixelX / rect.width) * 100)),
       y: Math.max(0, Math.min(100, (pixelY / rect.height) * 100)),
@@ -895,6 +1144,117 @@ function App() {
 
   function changeMapZoom(delta: number) {
     setMapZoom((current) => Math.max(0.5, Math.min(2, Number((current + delta).toFixed(2)))));
+  }
+
+  function updateMapPan(clientX: number, clientY: number) {
+    const drag = mapPanDragRef.current;
+    if (!drag) return;
+    setMapPan({
+      x: drag.originX + clientX - drag.x,
+      y: drag.originY + clientY - drag.y,
+    });
+  }
+
+  function finishMapPan() {
+    mapPanDragRef.current = null;
+    setIsPanning(false);
+  }
+
+  function presentAttack(effect: AttackEffect, broadcast = false) {
+    const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+    const displayed = { ...effect, animated: effect.animated && !reduceMotion };
+    setAttackEffect(displayed);
+    if (broadcast) publish("map.attack", displayed);
+    window.setTimeout(() => {
+      setAttackEffect((current) => current?.id === displayed.id ? null : current);
+    }, displayed.animated ? 650 : 180);
+  }
+
+  function fireTokenAttack(attacker: Token, target: Token) {
+    presentAttack({
+      id: uniqueId(),
+      startX: attacker.x,
+      startY: attacker.y,
+      endX: target.x,
+      endY: target.y,
+      animated: true,
+    }, true);
+    setAttackHint(`${attacker.name} atacou ${target.name}.`);
+    window.setTimeout(() => setAttackHint(""), 1800);
+  }
+
+  function updateDiceTerm(termId: string, patch: Partial<Omit<DiceTerm, "id">>) {
+    setDiceTerms((current) => normalizeDiceTerms(current.map((term) =>
+      term.id === termId ? { ...term, ...patch } : term,
+    )));
+  }
+
+  function commitDiceCount(termId: string, draft: string) {
+    const count = Number(draft);
+    if (Number.isSafeInteger(count) && count >= 1) updateDiceTerm(termId, { count: Math.min(20, count) });
+    setDiceCountDrafts((drafts) => {
+      const next = { ...drafts };
+      delete next[termId];
+      return next;
+    });
+  }
+
+  function addDiceTerm() {
+    setDiceTerms((current) => current.length >= 6
+      ? current
+      : normalizeDiceTerms([...current, { id: uniqueId(), count: 1, sides: 6 }]),
+    );
+  }
+
+  function removeDiceTerm(termId: string) {
+    setDiceTerms((current) => current.length <= 1
+      ? current
+      : normalizeDiceTerms(current.filter((term) => term.id !== termId)),
+    );
+  }
+
+  async function addMapScenes(files: File[]) {
+    if (currentRole !== "gm" || !files.length) return;
+    setMapSceneError("");
+    const added: MapScene[] = [];
+    for (const file of files) {
+      if (!file.type.startsWith("image/")) {
+        setMapSceneError(`“${file.name}” não é uma imagem compatível.`);
+        continue;
+      }
+      if (file.size > 40 * 1024 * 1024) {
+        setMapSceneError(`“${file.name}” excede o limite de 40 MB.`);
+        continue;
+      }
+      const id = uniqueId();
+      const assetId = `map-scene-${id}`;
+      try {
+        await saveLocalAsset(assetId, "map-image", file, file.name);
+        const url = createObjectUrl(file);
+        mapSceneUrlsRef.current = { ...mapSceneUrlsRef.current, [id]: url };
+        setMapSceneUrls(mapSceneUrlsRef.current);
+        added.push({ id, name: file.name.replace(/\.[^.]+$/, "") || file.name, assetId });
+      } catch (error) {
+        setMapSceneError(error instanceof Error ? error.message : `Não foi possível adicionar “${file.name}”.`);
+      }
+    }
+    if (added.length) {
+      persistMapQueue([...mapScenesRef.current, ...added], added[0].id);
+    }
+  }
+
+  function activateMapScene(sceneId: string) {
+    if (currentRole !== "gm" || !mapScenesRef.current.some((scene) => scene.id === sceneId)) return;
+    persistMapQueue(mapScenesRef.current, sceneId);
+  }
+
+  function removeMapScene(sceneId: string) {
+    if (currentRole !== "gm") return;
+    const scene = mapScenesRef.current.find((item) => item.id === sceneId);
+    if (!scene || !window.confirm(`Remover “${scene.name}” da fila de mapas?`)) return;
+    const nextScenes = mapScenesRef.current.filter((item) => item.id !== sceneId);
+    const nextActive = activeMapId === sceneId ? nextScenes[0]?.id ?? null : activeMapId;
+    persistMapQueue(nextScenes, nextActive);
   }
 
   function handlePanelResize(clientX: number) {
@@ -981,7 +1341,7 @@ function App() {
     const start = dragStartPositionRef.current;
     if (tokenId !== null && position && start && (start.x !== position.x || start.y !== position.y)) {
       const token = tokensRef.current.find((item) => item.id === tokenId);
-      if (token) {
+      if (token && canEditToken(token)) {
         persistTokens(tokensRef.current.map((item) =>
           item.id === tokenId ? { ...item, ...position } : item,
         ));
@@ -1026,7 +1386,7 @@ function App() {
       ...measurement,
       endX: point.x,
       endY: point.y,
-      distance: Math.round((pixels / 48) * 5),
+      distance: (pixels / 48) * 5,
       length: pixels,
       angle: Math.atan2(deltaY, deltaX),
     });
@@ -1034,6 +1394,7 @@ function App() {
 
   function addToken() {
     const count = tokensRef.current.length + 1;
+    const owner = currentRole === "player" ? playerName.trim() || "Jogador" : undefined;
     const token: Token = {
       id: Date.now() + Math.random(),
       name: `Token ${count}`,
@@ -1044,12 +1405,17 @@ function App() {
       bars: createStatusBars(20),
       shape: "circle",
       size: "medium",
+      showName: true,
+      borderStyle: "none",
+      owner,
+      ownerId: ownerIdentity(owner),
     };
     persistTokens([...tokensRef.current, token]);
     publish("token.upsert", token);
   }
 
   function addReservedToken() {
+    if (currentRole !== "gm") return;
     const count = reservedTokens.length + 1;
     const token: Token = {
       id: Date.now() + Math.random(),
@@ -1069,6 +1435,13 @@ function App() {
   }
 
   function updateToken(tokenId: number, patch: Partial<Token>) {
+    const existingToken = tokensRef.current.find((token) => token.id === tokenId);
+    if (!existingToken || !canEditToken(existingToken)) return;
+    if (
+      currentRole !== "gm" &&
+      (Object.prototype.hasOwnProperty.call(patch, "owner") ||
+        Object.prototype.hasOwnProperty.call(patch, "ownerId"))
+    ) return;
     const next = tokensRef.current.map((token) =>
       token.id === tokenId
         ? {
@@ -1088,7 +1461,7 @@ function App() {
 
   function removeToken(tokenId: number) {
     const token = tokensRef.current.find((item) => item.id === tokenId);
-    if (!token || !window.confirm(`Excluir o token “${token.name}” do tabuleiro?`)) return;
+    if (!token || !canEditToken(token) || !window.confirm(`Excluir o token “${token.name}” do tabuleiro?`)) return;
     persistTokens(tokensRef.current.filter((item) => item.id !== tokenId));
     setSelectedTokenId((selected) => (selected === tokenId ? null : selected));
     if (token.imageAssetId) {
@@ -1106,6 +1479,8 @@ function App() {
 
   async function loadTokenImage(tokenId: number, file?: File) {
     if (!file) return;
+    const token = tokensRef.current.find((item) => item.id === tokenId);
+    if (!token || !canEditToken(token)) return;
     if (!file.type.startsWith("image/")) {
       setPdfError("Selecione um arquivo de imagem válido para o token.");
       return;
@@ -1153,9 +1528,24 @@ function App() {
 
   function updateBar(tokenId: number, barId: string, patch: Partial<StatusBar>) {
     const token = tokensRef.current.find((item) => item.id === tokenId);
-    if (!token) return;
+    if (!token || !canEditToken(token)) return;
     updateToken(tokenId, {
       bars: token.bars.map((bar) => (bar.id === barId ? { ...bar, ...patch } : bar)),
+    });
+  }
+
+  function commitBarValue(tokenId: number, barId: string, draft: string) {
+    const token = tokensRef.current.find((item) => item.id === tokenId);
+    const bar = token?.bars.find((item) => item.id === barId);
+    const nextValue = draft.trim() ? Number(draft) : Number.NaN;
+    if (bar && Number.isSafeInteger(nextValue) && nextValue >= 0) {
+      updateBar(tokenId, barId, { value: Math.min(nextValue, bar.max) });
+    }
+    const key = `${tokenId}:${barId}`;
+    setValueDrafts((drafts) => {
+      const next = { ...drafts };
+      delete next[key];
+      return next;
     });
   }
 
@@ -1179,7 +1569,7 @@ function App() {
     if (!name) return;
     const palette = ["#b873ff", "#19d3ae", "#ff8a4c", "#e8e95b"];
     const token = tokensRef.current.find((item) => item.id === tokenId);
-    if (!token) return;
+    if (!token || !canEditToken(token)) return;
     updateToken(tokenId, {
       bars: [
         ...token.bars,
@@ -1199,7 +1589,7 @@ function App() {
 
   function removeStatusBar(tokenId: number, barId: string) {
     const token = tokensRef.current.find((item) => item.id === tokenId);
-    if (token) updateToken(tokenId, { bars: token.bars.filter((bar) => bar.id !== barId) });
+    if (token && canEditToken(token)) updateToken(tokenId, { bars: token.bars.filter((bar) => bar.id !== barId) });
   }
 
   async function loadPdf(file?: File) {
@@ -1374,7 +1764,7 @@ function App() {
                 <div>
                   <span className="eyebrow">CENA ATUAL</span>
                   <h1>
-                    Distrito Industrial <span>/ Zona 07</span>
+                    {activeMap?.name || "Distrito Industrial"} <span>/ Zona 07</span>
                   </h1>
                   <small className={`map-sync-status ${syncAvailable ? "available" : "unavailable"}`}>
                     {syncAvailable
@@ -1408,6 +1798,7 @@ function App() {
                     className={rulerActive ? "active" : ""}
                     onClick={() => {
                       setRulerActive((active) => !active);
+                      setPanActive(false);
                       setDrawingActive(false);
                       setMeasurement(null);
                       setIsMeasuring(false);
@@ -1417,11 +1808,31 @@ function App() {
                     <Icon name="ruler" /> Régua
                   </button>
                   <button
+                    className={panActive ? "active" : ""}
+                    aria-pressed={panActive}
+                    onClick={() => {
+                      const next = !panActive;
+                      setPanActive(next);
+                      finishMapPan();
+                      if (next) {
+                        setRulerActive(false);
+                        setDrawingActive(false);
+                        setMeasurement(null);
+                        setSceneEditMode(false);
+                        setScenePlacementKind(null);
+                      }
+                    }}
+                    title={panActive ? "Desativar movimento do mapa" : "Arrastar para mover a câmera do mapa"}
+                  >
+                    <Icon name="map" /> Mover mapa
+                  </button>
+                  <button
                     className={drawingActive ? "active" : ""}
                     disabled={!canDraw}
                     onClick={() => {
                       if (!canDraw) return;
                       setDrawingActive((active) => !active);
+                      setPanActive(false);
                       setRulerActive(false);
                       setMeasurement(null);
                     }}
@@ -1442,6 +1853,7 @@ function App() {
                       onClick={() => {
                         const next = !sceneEditMode;
                         setSceneEditMode(next);
+                        setPanActive(false);
                         setScenePlacementKind(null);
                         setRulerActive(false);
                         setDrawingActive(false);
@@ -1462,16 +1874,30 @@ function App() {
               </div>
               <div
                 ref={mapRef}
-                className={`battle-map ${rulerActive ? "ruler-active" : ""} ${drawingActive ? "drawing-active" : ""} ${sceneEditMode ? "scene-editing" : ""}`}
+                className={`battle-map ${rulerActive ? "ruler-active" : ""} ${drawingActive ? "drawing-active" : ""} ${sceneEditMode ? "scene-editing" : ""} ${panActive ? "pan-active" : ""} ${isPanning ? "is-panning" : ""}`}
                 role="region"
-                aria-label="Mapa interativo. Clique no mapa para usar os atalhos de zoom."
+                aria-label="Mapa interativo. Ative Mover mapa para arrastar a câmera; use Ctrl e a roda do mouse para zoom."
                 tabIndex={0}
                 style={{
+                  "--map-background": activeMapUrl ? `url("${activeMapUrl}")` : undefined,
                   backgroundSize: `${48 * mapZoom}px ${48 * mapZoom}px, ${48 * mapZoom}px ${48 * mapZoom}px, ${100 * mapZoom}% ${100 * mapZoom}%`,
-                  backgroundPosition: "center, center, center",
-                }}
+                  backgroundPosition: `calc(50% + ${mapPan.x}px) calc(50% + ${mapPan.y}px), calc(50% + ${mapPan.x}px) calc(50% + ${mapPan.y}px), calc(50% + ${mapPan.x}px) calc(50% + ${mapPan.y}px)`,
+                } as React.CSSProperties}
                 onPointerDown={(e) => {
+                  if (e.button !== 0) return;
                   const target = e.target as HTMLElement;
+                  if (panActive) {
+                    e.currentTarget.setPointerCapture(e.pointerId);
+                    mapPanDragRef.current = {
+                      pointerId: e.pointerId,
+                      x: e.clientX,
+                      y: e.clientY,
+                      originX: mapPan.x,
+                      originY: mapPan.y,
+                    };
+                    setIsPanning(true);
+                    return;
+                  }
                   if (
                     scenePlacementKind &&
                     sceneEditMode &&
@@ -1491,16 +1917,19 @@ function App() {
                   }
                 }}
                 onPointerMove={(e) => {
-                  if (drawingActive && canDraw) continueDrawing(e.clientX, e.clientY);
+                  if (mapPanDragRef.current) updateMapPan(e.clientX, e.clientY);
+                  else if (drawingActive && canDraw) continueDrawing(e.clientX, e.clientY);
                   else if (rulerActive) updateMeasurement(e.clientX, e.clientY);
                   else moveToken(e.clientX, e.clientY);
                 }}
                 onPointerUp={() => {
+                  finishMapPan();
                   finishTokenDrag();
                   setIsMeasuring(false);
                   setDrawing(false);
                 }}
                 onPointerLeave={() => {
+                  finishMapPan();
                   finishTokenDrag();
                   setIsMeasuring(false);
                   setDrawing(false);
@@ -1521,7 +1950,7 @@ function App() {
                     <small>{scenePlacementKind ? "Clique em um espaço vazio do mapa para inserir." : "Selecione um elemento para mover ou editar."}</small>
                   </div>
                 )}
-                <div className="map-zoom-layer" style={{ transform: `scale(${mapZoom})` }}>
+                <div className="map-zoom-layer" style={{ transform: `translate(${mapPan.x}px, ${mapPan.y}px) scale(${mapZoom})` }}>
                 <svg
                   className="drawing-layer"
                   viewBox="0 0 100 100"
@@ -1579,7 +2008,6 @@ function App() {
                   .map((token) => (
                     <button
                       key={token.id}
-                       className={`map-token ${token.enemy ? "enemy" : ""} shape-${token.shape || "circle"} size-${token.size || "medium"}`}
                       style={
                         {
                           left: `${dragVisual?.id === token.id ? dragVisual.x : token.x}%`,
@@ -1589,23 +2017,55 @@ function App() {
                         } as React.CSSProperties
                       }
                       onPointerDown={(e) => {
-                        if (rulerActive || drawingActive || sceneEditMode) return;
-                        e.currentTarget.setPointerCapture(e.pointerId);
-                        dragRef.current = token.id;
-                        dragStartPositionRef.current = { x: token.x, y: token.y };
-                        dragPositionRef.current = { x: token.x, y: token.y };
-                        setDragVisual({ id: token.id, x: token.x, y: token.y });
+                        if (e.button !== 0) return;
+                        if (rulerActive || drawingActive || sceneEditMode || panActive) return;
+                        if (canEditToken(token)) {
+                          e.currentTarget.setPointerCapture(e.pointerId);
+                          dragRef.current = token.id;
+                          dragStartPositionRef.current = { x: token.x, y: token.y };
+                          dragPositionRef.current = { x: token.x, y: token.y };
+                          setDragVisual({ id: token.id, x: token.x, y: token.y });
+                        }
                         setSelectedTokenId(token.id);
                         setSelectedSceneElementId(null);
+                        setAttackHint(canEditToken(token)
+                          ? "Botão direito em outro token para atacar."
+                          : "Token bloqueado: selecione um token que você controla para atacar.");
                       }}
-                      aria-label={`Mover ${token.name}`}
+                      onContextMenu={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        if (rulerActive || drawingActive || sceneEditMode || panActive) return;
+                        const attacker = selectedTokenId === null
+                          ? undefined
+                          : tokensRef.current.find((item) => item.id === selectedTokenId);
+                        if (!attacker || attacker.id === token.id) {
+                          if (!canEditToken(token)) {
+                            setAttackHint("Para atacar, selecione primeiro um token que você controla.");
+                            return;
+                          }
+                          setSelectedTokenId(token.id);
+                          setSelectedSceneElementId(null);
+                          setAttackHint(`Atacante: ${token.name}. Agora use o botão direito no alvo.`);
+                          return;
+                        }
+                        if (currentRole !== "gm" && !canEditToken(attacker)) {
+                          setAttackHint("Você só pode atacar com um token próprio ou atribuído pelo Mestre.");
+                          return;
+                        }
+                        fireTokenAttack(attacker, token);
+                      }}
+                      className={`map-token ${token.enemy ? "enemy" : ""} shape-${token.shape || "circle"} size-${token.size || "medium"} border-${token.borderStyle || "none"} ${canEditToken(token) ? "" : "locked"}`}
+                      aria-label={`${token.name}, ${canEditToken(token) ? "arrastável" : `bloqueado; proprietário: ${token.owner || "nenhum"}`}`}
+                      title={canEditToken(token) ? `Mover ${token.name}` : `Bloqueado • Proprietário: ${token.owner || "nenhum"}`}
                     >
                       {(token.imageAssetId && assetUrls[token.imageAssetId]) || token.image ? (
                         <img src={(token.imageAssetId && assetUrls[token.imageAssetId]) || token.image} alt="" />
                       ) : (
                         <span>{token.initials}</span>
                       )}
-                      <small>{token.name}</small>
+                      {token.showName !== false && <small>{token.name}</small>}
+                      {!canEditToken(token) && <span className="token-lock-badge" aria-hidden="true">🔒</span>}
                       {(showAllBars || selectedTokenId === token.id) && (
                         <div className="token-bars">
                           {token.bars
@@ -1646,6 +2106,43 @@ function App() {
                     <span className="measure-end" />
                   </div>
                 )}
+                {attackEffect && (
+                  <svg className="attack-effect" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+                    <defs>
+                      <filter id={`attack-glow-${attackEffect.id}`} x="-50%" y="-50%" width="200%" height="200%">
+                        <feGaussianBlur stdDeviation="0.45" result="blur" />
+                        <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+                      </filter>
+                    </defs>
+                    <path
+                      className="attack-beam-glow"
+                      d={`M ${attackEffect.startX} ${attackEffect.startY} L ${attackEffect.endX} ${attackEffect.endY}`}
+                      pathLength="100"
+                    />
+                    <path
+                      className="attack-beam"
+                      d={`M ${attackEffect.startX} ${attackEffect.startY} L ${attackEffect.endX} ${attackEffect.endY}`}
+                      pathLength="100"
+                      filter={`url(#attack-glow-${attackEffect.id})`}
+                    />
+                    <circle
+                      className="attack-projectile"
+                      cx={attackEffect.animated ? attackEffect.startX : attackEffect.endX}
+                      cy={attackEffect.animated ? attackEffect.startY : attackEffect.endY}
+                      r="0.85"
+                    >
+                      {attackEffect.animated && (
+                        <animateMotion
+                          dur="520ms"
+                          path={`M ${attackEffect.startX} ${attackEffect.startY} L ${attackEffect.endX} ${attackEffect.endY}`}
+                          fill="freeze"
+                          rotate="auto"
+                        />
+                      )}
+                    </circle>
+                    <circle className="attack-impact" cx={attackEffect.endX} cy={attackEffect.endY} r="1.5" />
+                  </svg>
+                )}
                 </div>
                 {drawingActive && (
                   <div className="drawing-tools" onPointerDown={(e) => e.stopPropagation()}>
@@ -1679,6 +2176,9 @@ function App() {
                   (() => {
                     const selected = tokens.find((token) => token.id === selectedTokenId);
                     if (!selected) return null;
+                    const selectedCanEdit = canEditToken(selected);
+                    const selectedOwnerId = tokenOwnerId(selected);
+                    const selectedOwnerName = selected.owner || ownerOptions.find((owner) => owner.id === selectedOwnerId)?.name;
                     return (
                       <div
                         className="token-status-panel"
@@ -1692,9 +2192,20 @@ function App() {
                             {selected.initials}
                           </span>
                           <div>
-                            <small>STATUS DO TOKEN</small>
+                            <small>{selectedCanEdit ? "STATUS DO TOKEN" : "TOKEN BLOQUEADO"}</small>
                             <strong>{selected.name}</strong>
                           </div>
+                          <button
+                            className={`token-name-quick-toggle ${selected.showName === false ? "off" : ""}`}
+                            disabled={!selectedCanEdit}
+                            aria-label={selected.showName === false ? "Exibir nome no mapa" : "Ocultar nome no mapa"}
+                            aria-pressed={selected.showName !== false}
+                            title={selected.showName === false ? "Exibir nome no mapa" : "Ocultar nome no mapa"}
+                            onClick={() => updateToken(selected.id, { showName: selected.showName === false })}
+                          >
+                            <Icon name="eye" size={14} />
+                            <span>Nome</span>
+                          </button>
                           <button
                             className="status-close"
                             onClick={() => setSelectedTokenId(null)}
@@ -1703,6 +2214,10 @@ function App() {
                             <Icon name="close" size={16} />
                           </button>
                         </header>
+                        <p className={`token-permission-note ${selectedCanEdit ? "editable" : "locked"}`}>
+                          {selectedCanEdit ? "Proprietário" : "Somente visualização · proprietário"}: {selectedOwnerName || "nenhum"}
+                        </p>
+                        {attackHint && <p className="attack-hint" role="status">{attackHint}</p>}
                         <div className="status-list">
                           {selected.bars.map((bar) => (
                             <div
@@ -1717,6 +2232,7 @@ function App() {
                                 </span>
                                 <button
                                   className="visibility-btn"
+                                  disabled={!selectedCanEdit}
                                   onClick={() =>
                                     updateBar(selected.id, bar.id, { visible: !bar.visible })
                                   }
@@ -1726,6 +2242,7 @@ function App() {
                                 </button>
                                 <button
                                   className="remove-bar"
+                                  disabled={!selectedCanEdit}
                                   onClick={() => removeStatusBar(selected.id, bar.id)}
                                   title="Apagar barra"
                                 >
@@ -1735,6 +2252,7 @@ function App() {
                               <div className="status-control">
                                 <input
                                   type="range"
+                                  disabled={!selectedCanEdit}
                                   min="0"
                                   max={bar.max}
                                   value={Math.min(bar.value, bar.max)}
@@ -1747,19 +2265,28 @@ function App() {
                                 />
                                 <input
                                   aria-label={`Valor atual de ${bar.name}`}
-                                  type="number"
-                                  min="0"
-                                  value={bar.value}
-                                  onChange={(e) =>
-                                    updateBar(selected.id, bar.id, {
-                                      value: Math.max(0, Number(e.target.value)),
-                                    })
-                                  }
+                                  type="text"
+                                  disabled={!selectedCanEdit}
+                                  inputMode="numeric"
+                                  value={valueDrafts[`${selected.id}:${bar.id}`] ?? String(bar.value)}
+                                  onFocus={() => setValueDrafts((drafts) => ({
+                                    ...drafts,
+                                    [`${selected.id}:${bar.id}`]: String(bar.value),
+                                  }))}
+                                  onChange={(event) => setValueDrafts((drafts) => ({
+                                    ...drafts,
+                                    [`${selected.id}:${bar.id}`]: event.target.value.replace(/[^0-9]/g, ""),
+                                  }))}
+                                  onBlur={(event) => commitBarValue(selected.id, bar.id, event.currentTarget.value)}
+                                  onKeyDown={(event) => {
+                                    if (event.key === "Enter") event.currentTarget.blur();
+                                  }}
                                 />
                                 <span>/</span>
                                 <input
                                   aria-label={`Valor máximo de ${bar.name}`}
                                   type="text"
+                                  disabled={!selectedCanEdit}
                                   inputMode="numeric"
                                   value={maxDrafts[`${selected.id}:${bar.id}`] ?? String(bar.max)}
                                   onFocus={() => setMaxDrafts((drafts) => ({
@@ -1781,6 +2308,7 @@ function App() {
                         </div>
                         <div className="add-status">
                           <input
+                            disabled={!selectedCanEdit}
                             value={newBarName}
                             onChange={(e) => setNewBarName(e.target.value)}
                             onKeyDown={(e) => e.key === "Enter" && addStatusBar(selected.id)}
@@ -1788,8 +2316,8 @@ function App() {
                             maxLength={18}
                           />
                           <button
+                            disabled={!selectedCanEdit || !newBarName.trim()}
                             onClick={() => addStatusBar(selected.id)}
-                            disabled={!newBarName.trim()}
                           >
                             <Icon name="plus" size={15} /> Adicionar
                           </button>
@@ -1799,11 +2327,32 @@ function App() {
                               <span>IDENTIDADE DO TOKEN</span>
                               <small>Alterações locais nesta mesa</small>
                             </div>
+                            {currentRole === "gm" && (
+                              <label className="token-owner-control">
+                                Proprietário do token
+                                <select
+                                  value={selectedOwnerId || ""}
+                                  onChange={(event) => {
+                                    const owner = ownerOptions.find((choice) => choice.id === event.target.value);
+                                    updateToken(selected.id, {
+                                      ownerId: owner?.id,
+                                      owner: owner?.name,
+                                    });
+                                  }}
+                                >
+                                  <option value="">Sem proprietário</option>
+                                  {ownerOptions.map((owner) => (
+                                    <option key={owner.id} value={owner.id}>{owner.name}</option>
+                                  ))}
+                                </select>
+                              </label>
+                            )}
                             <div className="token-identity">
                               <label>
                                 Nome
                                 <input
                                   value={selected.name}
+                                  disabled={!selectedCanEdit}
                                   maxLength={32}
                                   onChange={(event) => updateToken(selected.id, { name: event.target.value })}
                                 />
@@ -1813,14 +2362,38 @@ function App() {
                                 <input
                                   type="color"
                                   value={selected.color}
+                                  disabled={!selectedCanEdit}
                                   onChange={(event) => updateToken(selected.id, { color: event.target.value })}
                                 />
                               </label>
                             </div>
+                            <label className="token-border-control">
+                              Estilo da borda
+                              <select
+                                value={selected.borderStyle || "none"}
+                                disabled={!selectedCanEdit}
+                                onChange={(event) => updateToken(selected.id, {
+                                  borderStyle: event.target.value as Token["borderStyle"],
+                                })}
+                              >
+                                <option value="none">Sem borda</option>
+                                <option value="bordered">Com borda</option>
+                              </select>
+                            </label>
+                            <label className="token-name-toggle">
+                              <input
+                                type="checkbox"
+                                checked={selected.showName !== false}
+                                disabled={!selectedCanEdit}
+                                onChange={(event) => updateToken(selected.id, { showName: event.target.checked })}
+                              />
+                              <span>Exibir nome abaixo do token</span>
+                            </label>
                             <label className="token-size-control">
                               <span>Tamanho no mapa <b>{sizePixels(selected.size, selected.sizePx)} px</b></span>
                               <input
                                 type="range"
+                                disabled={!selectedCanEdit}
                                 min="24"
                                 max="96"
                                 step="1"
@@ -1830,18 +2403,20 @@ function App() {
                               />
                             </label>
                             <div className="customizer-row">
-                              <label className="token-upload">
+                              <label className={`token-upload ${selectedCanEdit ? "" : "disabled"}`}>
                                 <Icon name="upload" size={14} />
                                 {selected.imageAssetId ? "Trocar imagem" : "Adicionar imagem"}
                                 <input
                                   type="file"
                                   accept="image/*"
+                                  disabled={!selectedCanEdit}
                                   onChange={(e) => loadTokenImage(selected.id, e.target.files?.[0])}
                                 />
                               </label>
                               {selected.imageAssetId && (
                                 <button
                                   className="remove-image"
+                                  disabled={!selectedCanEdit}
                                   onClick={async () => {
                                     if (selected.imageAssetId) {
                                       await removeLocalAsset(selected.imageAssetId).catch(() => undefined);
@@ -1868,6 +2443,7 @@ function App() {
                                     <button
                                       key={shape}
                                       className={selected.shape === shape ? "active" : ""}
+                                      disabled={!selectedCanEdit}
                                       onClick={() => updateToken(selected.id, { shape })}
                                       title={
                                         shape === "circle"
@@ -1886,6 +2462,7 @@ function App() {
                                 Tamanho
                                 <select
                                   value={selected.size}
+                                  disabled={!selectedCanEdit}
                                   onChange={(e) =>
                                     updateToken(selected.id, {
                                       size: e.target.value as Token["size"],
@@ -1899,7 +2476,7 @@ function App() {
                                 </select>
                               </label>
                             </div>
-                            <button className="token-delete" onClick={() => removeToken(selected.id)}>
+                            <button className="token-delete" disabled={!selectedCanEdit} onClick={() => removeToken(selected.id)}>
                               <Icon name="trash" size={14} /> Excluir token
                             </button>
                           </div>
@@ -2039,27 +2616,49 @@ function App() {
                 <div className="gm-card encounters">
                   <div className="card-title">
                     <span>
-                      <Icon name="map" /> Cenas preparadas
+                      <Icon name="map" /> Fila de mapas
                     </span>
+                    <label className="map-queue-add">
+                      <Icon name="upload" size={13} /> Adicionar
+                      <input
+                        type="file"
+                        accept="image/*"
+                        multiple
+                        onChange={(event) => {
+                          const files = Array.from(event.currentTarget.files || []);
+                          void addMapScenes(files);
+                          event.currentTarget.value = "";
+                        }}
+                      />
+                    </label>
                   </div>
-                  <button className="selected">
-                    <b>01</b>
-                    <span>
-                      Distrito Industrial<small>Ativa agora</small>
-                    </span>
-                  </button>
-                  <button>
-                    <b>02</b>
-                    <span>
-                      Sublevel Bar<small>4 tokens</small>
-                    </span>
-                  </button>
-                  <button>
-                    <b>03</b>
-                    <span>
-                      Torre Kessler<small>Não iniciada</small>
-                    </span>
-                  </button>
+                  <p className="map-queue-help">Adicione imagens para preparar cenas e selecione uma para exibir no mapa.</p>
+                  {mapSceneError && <small className="map-queue-error" role="alert">{mapSceneError}</small>}
+                  <div className="map-queue-list">
+                    {mapScenes.length ? mapScenes.map((scene, index) => (
+                      <div className={`map-queue-item ${activeMapId === scene.id ? "selected" : ""}`} key={scene.id}>
+                        <button
+                          className="map-queue-select"
+                          onClick={() => activateMapScene(scene.id)}
+                          aria-pressed={activeMapId === scene.id}
+                          title={`Exibir ${scene.name} na mesa`}
+                        >
+                          <b>{String(index + 1).padStart(2, "0")}</b>
+                          <span>{scene.name}<small>{activeMapId === scene.id ? "Ativo na mesa" : "Selecionar cena"}</small></span>
+                        </button>
+                        <button
+                          className="map-queue-remove"
+                          onClick={() => removeMapScene(scene.id)}
+                          aria-label={`Remover ${scene.name} da fila`}
+                          title="Remover mapa"
+                        >
+                          <Icon name="trash" size={13} />
+                        </button>
+                      </div>
+                    )) : (
+                      <div className="map-queue-empty">Nenhum mapa carregado. A mesa usa o fundo padrão.</div>
+                    )}
+                  </div>
                 </div>
                 <div className="gm-card reserve-card">
                   <div className="card-title">
@@ -2199,6 +2798,11 @@ function App() {
               <div className="messages">
                 <div className="day-divider">
                   <span>HOJE</span>
+                  {currentRole === "gm" && (
+                    <button className="chat-clear" onClick={clearChat} title="Limpar histórico do chat">
+                      <Icon name="trash" size={12} /> Limpar
+                    </button>
+                  )}
                 </div>
                 {messages.map((msg) => (
                   <div className={`message ${msg.kind === "roll" ? "roll" : ""} ${msg.critical ? `critical-${msg.critical}` : ""}`} key={msg.id}>
@@ -2236,17 +2840,64 @@ function App() {
               <div className={`dice-result ${lastRoll !== null ? "rolled" : ""} ${isRolling ? "rolling" : ""}`} aria-live="polite" aria-busy={isRolling}>
                 <Icon name="dice" size={28} />
                 <span>{lastRoll ?? "—"}</span>
-                <small>{isRolling ? "ROLANDO" : `D${dieSides} • RESULTADO`}</small>
+                <small>{isRolling ? "ROLANDO" : `${diceSummary.toUpperCase()} • RESULTADO`}</small>
               </div>
-              <p className="red-die-label">{dieSides === 10 ? "CYBERPUNK RED • D10" : `DADO PERSONALIZADO • D${dieSides}`}</p>
-              <label className="die-selector">
-                Tipo de dado
-                <select value={dieSides} disabled={isRolling} onChange={(event) => setDieSides(Number(event.target.value))}>
-                  {Array.from({ length: 100 }, (_, index) => index + 1).map((sides) => (
-                    <option key={sides} value={sides}>d{sides}</option>
-                  ))}
-                </select>
-              </label>
+              <p className="red-die-label">
+                {diceTerms.some((term) => term.sides === 10)
+                  ? "D10 • REGRA DE CRÍTICO CYBERPUNK RED"
+                  : "MONTE SUA ROLAGEM"}
+              </p>
+              <div className="dice-term-list">
+                {diceTerms.map((term) => (
+                  <div className="dice-term-row" key={term.id}>
+                    <label>
+                      Qtd.
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={diceCountDrafts[term.id] ?? String(term.count)}
+                        disabled={isRolling}
+                        aria-label={`Quantidade de dados d${term.sides}`}
+                        onFocus={() => setDiceCountDrafts((drafts) => ({ ...drafts, [term.id]: String(term.count) }))}
+                        onChange={(event) => setDiceCountDrafts((drafts) => ({
+                          ...drafts,
+                          [term.id]: event.target.value.replace(/[^0-9]/g, ""),
+                        }))}
+                        onBlur={(event) => commitDiceCount(term.id, event.currentTarget.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") event.currentTarget.blur();
+                        }}
+                      />
+                    </label>
+                    <label>
+                      Dado
+                      <select
+                        value={term.sides}
+                        disabled={isRolling}
+                        aria-label="Tipo de dado"
+                        onChange={(event) => updateDiceTerm(term.id, { sides: Number(event.target.value) })}
+                      >
+                        {Array.from({ length: 100 }, (_, index) => index + 1).map((sides) => (
+                          <option key={sides} value={sides}>d{sides}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <button
+                      type="button"
+                      className="dice-term-remove"
+                      disabled={isRolling || diceTerms.length <= 1}
+                      aria-label={`Remover grupo ${term.count}d${term.sides}`}
+                      title="Remover grupo"
+                      onClick={() => removeDiceTerm(term.id)}
+                    >
+                      <Icon name="trash" size={14} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <button className="dice-add-term" onClick={addDiceTerm} disabled={isRolling || diceTerms.length >= 6}>
+                <Icon name="plus" size={14} /> Adicionar tipo de dado
+              </button>
               <label>
                 Modificador
                 <div className="modifier">
@@ -2259,9 +2910,9 @@ function App() {
                 </div>
               </label>
               <button className="roll-btn" onClick={rollDice} disabled={isRolling}>
-                <Icon name="dice" /> {isRolling ? `Rolando d${dieSides}…` : `Rolar d${dieSides}`}
+                <Icon name="dice" /> {isRolling ? `Rolando ${diceSummary}…` : `Rolar ${diceSummary}`}
               </button>
-              <small className="dice-hint">{dieSides === 10 ? "No d10, resultados naturais 10 e 1 incluem um dado adicional e indicam críticos." : "A rolagem usa o número de faces selecionado e o modificador atual."}</small>
+              <small className="dice-hint">Até 6 grupos, com 1 a 20 dados por grupo. No d10, naturais 10 e 1 incluem um dado adicional.</small>
             </div>
           ) : rightPanel === "sheet" ? (
             <div className="side-sheet">
