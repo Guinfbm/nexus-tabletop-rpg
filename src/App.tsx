@@ -206,25 +206,38 @@ type DicePoolRoll = {
 };
 type TableRole = "gm" | "player";
 type SavedTableSession = { name: string; role: TableRole };
+type AudioControl = {
+  action: "play" | "pause" | "stop" | "loop";
+  currentTime: number;
+  sentAt: number;
+  loop?: boolean;
+};
 type MapQueuePayload = { scenes: MapScene[]; activeMapId: string | null; imageScale?: number };
-type TokenContextMenu = { x: number; y: number; targetId: number };
 type AttackEffect = {
   id: string;
+  attackerId: number;
+  targetId: number;
   startX: number;
   startY: number;
   endX: number;
   endY: number;
   animated: boolean;
 };
+type AttackFeedback = { id: string; attackerId: number; targetId: number; phase: 0 | 1 };
 type SceneElement = {
   id: string;
   name: string;
-  kind: "marker" | "cover" | "hazard";
+  kind: "marker" | "cover" | "hazard" | "image";
   x: number;
   y: number;
   color: string;
   size: "small" | "medium" | "large";
+  imageAssetId?: string;
+  imageWidth?: number;
+  imageHeight?: number;
+  imageScale?: number;
 };
+type ScenePlacementKind = Exclude<SceneElement["kind"], "image">;
 type Message = {
   id: string | number;
   author: string;
@@ -573,8 +586,10 @@ function App() {
   const [dragVisual, setDragVisual] = useState<{ id: number; x: number; y: number } | null>(null);
   const [selectedTokenId, setSelectedTokenId] = useState<number | null>(null);
   const [attackEffect, setAttackEffect] = useState<AttackEffect | null>(null);
+  const [attackFeedback, setAttackFeedback] = useState<AttackFeedback | null>(null);
   const [attackHint, setAttackHint] = useState("");
-  const [tokenContextMenu, setTokenContextMenu] = useState<TokenContextMenu | null>(null);
+  const [attackShooterId, setAttackShooterId] = useState<number | null>(null);
+  const attackClickCountRef = useRef(0);
   const [showAllBars, setShowAllBars] = useState(false);
   const [rulerActive, setRulerActive] = useState(false);
   const [measurement, setMeasurement] = useState<Measurement | null>(null);
@@ -599,15 +614,19 @@ function App() {
     }
   });
   const [sceneEditMode, setSceneEditMode] = useState(false);
-  const [scenePlacementKind, setScenePlacementKind] = useState<SceneElement["kind"] | null>(null);
+  const [scenePlacementKind, setScenePlacementKind] = useState<ScenePlacementKind | null>(null);
   const [selectedSceneElementId, setSelectedSceneElementId] = useState<string | null>(null);
   const [sceneDragVisual, setSceneDragVisual] = useState<{ id: string; x: number; y: number } | null>(null);
+  const [sceneImageError, setSceneImageError] = useState("");
   const [playersCanDraw, setPlayersCanDraw] = useState(() => {
     const current = localStorage.getItem("nexus-table-player-drawing");
     return current === null
       ? localStorage.getItem("nexus-player-drawing") === "true"
       : current === "true";
   });
+  const [playersCanMoveOtherTokens, setPlayersCanMoveOtherTokens] = useState(() =>
+    localStorage.getItem("nexus-table-player-token-movement") === "true",
+  );
   const [newBarName, setNewBarName] = useState("");
   const [maxDrafts, setMaxDrafts] = useState<Record<string, string>>({});
   const [valueDrafts, setValueDrafts] = useState<Record<string, string>>({});
@@ -648,8 +667,15 @@ function App() {
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [audioName, setAudioName] = useState("");
   const [audioPlaying, setAudioPlaying] = useState(false);
-  const [audioVolume, setAudioVolume] = useState(65);
+  const [audioVolume, setAudioVolume] = useState(() => {
+    const stored = sessionStorage.getItem("nexus-table-audio-volume");
+    if (stored === null) return 65;
+    const saved = Number(stored);
+    return Number.isFinite(saved) ? Math.max(0, Math.min(100, saved)) : 65;
+  });
   const [audioLoop, setAudioLoop] = useState(true);
+  const [audioNeedsInteraction, setAudioNeedsInteraction] = useState(false);
+  const [audioError, setAudioError] = useState("");
   const [notes, setNotes] = useState(
     () =>
       localStorage.getItem("nexus-table-notes") ||
@@ -685,6 +711,9 @@ function App() {
   const sceneDragStartRef = useRef<{ x: number; y: number } | null>(null);
   const resizingPanelRef = useRef(false);
   const audioRef = useRef<HTMLAudioElement>(null);
+  const audioUrlRef = useRef<string | null>(null);
+  const pendingAudioControlRef = useRef<AudioControl | null>(null);
+  const attackFeedbackPhaseRef = useRef<0 | 1>(0);
   const channelRef = useRef<TableChannel | null>(null);
   const tokensRef = useRef(tokens);
   const messagesRef = useRef(messages);
@@ -725,6 +754,12 @@ function App() {
     if (!url || !objectUrlsRef.current.has(url)) return;
     URL.revokeObjectURL(url);
     objectUrlsRef.current.delete(url);
+  };
+  const replaceAudioSource = (url: string | null, name = "") => {
+    if (audioUrlRef.current !== url) releaseObjectUrl(audioUrlRef.current);
+    audioUrlRef.current = url;
+    setAudioUrl(url);
+    setAudioName(name);
   };
 
   const persistTokens = (next: Token[]) => {
@@ -852,6 +887,22 @@ function App() {
     () => localStorage.setItem("nexus-table-scene-elements", JSON.stringify(sceneElements)),
     [sceneElements],
   );
+  useEffect(() => {
+    let cancelled = false;
+    sceneElements.forEach((element) => {
+      if (element.kind !== "image" || !element.imageAssetId || assetUrls[element.imageAssetId]) return;
+      void getLocalAsset(element.imageAssetId).then((asset) => {
+        if (!asset || cancelled) return;
+        const url = createObjectUrl(asset.blob);
+        setAssetUrls((current) => current[element.imageAssetId!]
+          ? current
+          : { ...current, [element.imageAssetId!]: url });
+      }).catch(() => {
+        if (!cancelled) setSceneImageError(`Não foi possível carregar a imagem “${element.name}”.`);
+      });
+    });
+    return () => { cancelled = true; };
+  }, [sceneElements, assetUrls]);
   useEffect(() => localStorage.setItem("nexus-table-panel-width", String(sidePanelWidth)), [sidePanelWidth]);
   useEffect(() => {
     localStorage.setItem("nexus-table-dice-terms", JSON.stringify(diceTerms));
@@ -918,6 +969,10 @@ function App() {
     },
     [playersCanDraw],
   );
+  useEffect(() => {
+    localStorage.setItem("nexus-table-player-token-movement", String(playersCanMoveOtherTokens));
+    publish("gm.token-movement-permission", playersCanMoveOtherTokens);
+  }, [playersCanMoveOtherTokens]);
 
   useEffect(() => {
     const channel = createTableChannel();
@@ -1018,6 +1073,40 @@ function App() {
           suppressSharedEffectRef.current.drawingPermission = true;
           setPlayersCanDraw(value);
         }
+      } else if (event.type === "gm.token-movement-permission") {
+        setPlayersCanMoveOtherTokens(Boolean(event.payload));
+      } else if (event.type === "audio.track") {
+        const track = event.payload as { assetId: string; name: string; blob: Blob; loop?: boolean };
+        if (!track?.blob || typeof track.name !== "string") return;
+        void saveLocalAsset(track.assetId, "session-audio", track.blob, track.name)
+          .then(() => {
+            localStorage.setItem("nexus-table-session-audio", JSON.stringify({
+              assetId: track.assetId,
+              name: track.name,
+              loop: track.loop ?? true,
+            }));
+            replaceAudioSource(createObjectUrl(track.blob), track.name);
+            if (typeof track.loop === "boolean") {
+              setAudioLoop(track.loop);
+              if (audioRef.current) audioRef.current.loop = track.loop;
+            }
+            setAudioPlaying(false);
+            setAudioNeedsInteraction(false);
+            setAudioError("");
+          })
+          .catch(() => setAudioError("Não foi possível receber a música nesta aba."));
+      } else if (event.type === "audio.control") {
+        applyAudioControl(event.payload as AudioControl);
+      } else if (event.type === "audio.clear") {
+        pendingAudioControlRef.current = null;
+        audioRef.current?.pause();
+        replaceAudioSource(null);
+        setAudioPlaying(false);
+        setAudioNeedsInteraction(false);
+        setAudioError("");
+        localStorage.removeItem("nexus-table-session-audio");
+        localStorage.removeItem("nexus-table-audio-control");
+        void removeLocalAsset("nexus-table-session-audio").catch(() => undefined);
       }
     });
     return () => {
@@ -1146,6 +1235,10 @@ function App() {
     return currentRole === "gm" || (!!playerOwnerId && tokenOwnerId(token) === playerOwnerId);
   }
 
+  function canMoveToken(token: Token): boolean {
+    return currentRole === "gm" || canEditToken(token) || playersCanMoveOtherTokens;
+  }
+
   function sendMessage() {
     if (!message.trim()) return;
     addMessage({
@@ -1256,15 +1349,30 @@ function App() {
     const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
     const displayed = { ...effect, animated: effect.animated && !reduceMotion };
     setAttackEffect(displayed);
-    if (broadcast) publish("map.attack", displayed);
+    if (displayed.animated) {
+      const phase = attackFeedbackPhaseRef.current === 0 ? 1 : 0;
+      attackFeedbackPhaseRef.current = phase;
+      setAttackFeedback({
+        id: effect.id,
+        attackerId: effect.attackerId,
+        targetId: effect.targetId,
+        phase,
+      });
+      window.setTimeout(() => {
+        setAttackFeedback((current) => current?.id === effect.id ? null : current);
+      }, 190);
+    }
+    if (broadcast) publish("map.attack", effect);
     window.setTimeout(() => {
       setAttackEffect((current) => current?.id === displayed.id ? null : current);
-    }, displayed.animated ? 650 : 180);
+    }, displayed.animated ? 230 : 120);
   }
 
   function fireTokenAttack(attacker: Token, target: Token) {
     presentAttack({
       id: uniqueId(),
+      attackerId: attacker.id,
+      targetId: target.id,
       startX: attacker.x,
       startY: attacker.y,
       endX: target.x,
@@ -1272,7 +1380,24 @@ function App() {
       animated: true,
     }, true);
     setAttackHint(`${attacker.name} atacou ${target.name}.`);
-    window.setTimeout(() => setAttackHint(""), 1800);
+    window.setTimeout(() => setAttackHint(""), 900);
+  }
+
+  function cancelAttackAim() {
+    attackClickCountRef.current = 0;
+    setAttackShooterId(null);
+  }
+
+  function shootAtToken(attacker: Token, target: Token) {
+    if (attackClickCountRef.current >= 5) return;
+    fireTokenAttack(attacker, target);
+    attackClickCountRef.current += 1;
+    if (attackClickCountRef.current >= 5) {
+      setAttackShooterId(null);
+      setAttackHint("Limite de cinco tiros atingido.");
+    } else {
+      setAttackHint(`Tiro ${attackClickCountRef.current} de 5. Clique em outro alvo ou cancele a mira.`);
+    }
   }
 
   function updateDiceTerm(termId: string, patch: Partial<Omit<DiceTerm, "id">>) {
@@ -1371,7 +1496,7 @@ function App() {
     document.body.classList.remove("resizing-side-panel");
   }
 
-  function addSceneElement(kind: SceneElement["kind"], x: number, y: number) {
+  function addSceneElement(kind: ScenePlacementKind, x: number, y: number) {
     const count = sceneElementsRef.current.filter((item) => item.kind === kind).length + 1;
     const defaults = {
       marker: { name: "Marcador", color: "#18e3d0" },
@@ -1403,10 +1528,66 @@ function App() {
   }
 
   function removeSceneElement(id: string) {
+    const removed = sceneElementsRef.current.find((element) => element.id === id);
     const next = sceneElementsRef.current.filter((element) => element.id !== id);
     persistSceneElements(next);
     publish("scene.delete", { id });
     setSelectedSceneElementId((selected) => (selected === id ? null : selected));
+    if (removed?.imageAssetId) {
+      void removeLocalAsset(removed.imageAssetId).catch(() => undefined);
+      releaseObjectUrl(assetUrls[removed.imageAssetId] || null);
+      setAssetUrls((current) => {
+        const nextAssets = { ...current };
+        delete nextAssets[removed.imageAssetId!];
+        return nextAssets;
+      });
+    }
+  }
+
+  async function addSceneImage(file?: File) {
+    if (!file || currentRole !== "gm") return;
+    if (file.type !== "image/png") {
+      setSceneImageError("Selecione uma imagem PNG.");
+      return;
+    }
+    if (file.size > 20 * 1024 * 1024) {
+      setSceneImageError("A imagem PNG deve ter até 20 MB.");
+      return;
+    }
+    let width = 0;
+    let height = 0;
+    try {
+      const bitmap = await createImageBitmap(file);
+      width = bitmap.width;
+      height = bitmap.height;
+      bitmap.close();
+      const id = uniqueId();
+      const imageAssetId = `scene-image-${id}`;
+      await saveLocalAsset(imageAssetId, "map-image", file, file.name);
+      const url = createObjectUrl(file);
+      setAssetUrls((current) => ({ ...current, [imageAssetId]: url }));
+      const element: SceneElement = {
+        id,
+        name: file.name.replace(/\.png$/i, "") || "Imagem",
+        kind: "image",
+        x: 50,
+        y: 50,
+        color: "#ffffff",
+        size: "medium",
+        imageAssetId,
+        imageWidth: width,
+        imageHeight: height,
+        imageScale: 100,
+      };
+      const next = [...sceneElementsRef.current, element];
+      persistSceneElements(next);
+      publish("scene.upsert", element);
+      setSelectedSceneElementId(id);
+      setSelectedTokenId(null);
+      setSceneImageError("");
+    } catch (error) {
+      setSceneImageError(error instanceof Error ? error.message : "Não foi possível adicionar a imagem.");
+    }
   }
 
   function finishTokenDrag() {
@@ -1433,7 +1614,7 @@ function App() {
     const start = dragStartPositionRef.current;
     if (tokenId !== null && position && start && (start.x !== position.x || start.y !== position.y)) {
       const token = tokensRef.current.find((item) => item.id === tokenId);
-      if (token && canEditToken(token)) {
+      if (token && canMoveToken(token)) {
         persistTokens(tokensRef.current.map((item) =>
           item.id === tokenId ? { ...item, ...position } : item,
         ));
@@ -1718,42 +1899,176 @@ function App() {
     await removeLocalAsset(`nexus-character-sheet-${tabStorageId}`).catch(() => undefined);
   }
 
-  function loadAudio(file?: File) {
-    if (!file) return;
-    audioRef.current?.pause();
-    if (audioRef.current) audioRef.current.currentTime = 0;
-    releaseObjectUrl(audioUrl);
-    const url = createObjectUrl(file);
-    setAudioUrl(url);
-    setAudioName(file.name);
-    setAudioPlaying(false);
+  async function loadAudio(file?: File) {
+    if (!file || currentRole !== "gm") return;
+    if (!file.type.startsWith("audio/")) {
+      setAudioError("Selecione um arquivo de áudio compatível.");
+      return;
+    }
+    if (file.size > 50 * 1024 * 1024) {
+      setAudioError("A música deve ter até 50 MB para sincronizar entre abas.");
+      return;
+    }
+    const assetId = "nexus-table-session-audio";
+    try {
+      await saveLocalAsset(assetId, "session-audio", file, file.name);
+      audioRef.current?.pause();
+      if (audioRef.current) audioRef.current.currentTime = 0;
+      replaceAudioSource(createObjectUrl(file), file.name);
+      setAudioPlaying(false);
+      setAudioNeedsInteraction(false);
+      setAudioError("");
+      localStorage.setItem("nexus-table-session-audio", JSON.stringify({ assetId, name: file.name, loop: audioLoop }));
+      localStorage.removeItem("nexus-table-audio-control");
+      publish("audio.track", { assetId, name: file.name, blob: file, loop: audioLoop });
+    } catch (error) {
+      setAudioError(error instanceof Error ? error.message : "Não foi possível carregar a música.");
+    }
   }
 
   function clearAudio() {
+    if (currentRole !== "gm") return;
     audioRef.current?.pause();
     if (audioRef.current) audioRef.current.currentTime = 0;
-    releaseObjectUrl(audioUrl);
-    setAudioUrl(null);
-    setAudioName("");
+    pendingAudioControlRef.current = null;
+    publish("audio.clear", null);
+    replaceAudioSource(null);
     setAudioPlaying(false);
+    setAudioNeedsInteraction(false);
+    setAudioError("");
+    localStorage.removeItem("nexus-table-session-audio");
+    localStorage.removeItem("nexus-table-audio-control");
+    void removeLocalAsset("nexus-table-session-audio").catch(() => undefined);
+  }
+
+  function sendAudioControl(action: AudioControl["action"], loop?: boolean) {
+    if (currentRole !== "gm" || !audioUrl) return;
+    const command: AudioControl = {
+      action,
+      currentTime: action === "stop" ? 0 : audioRef.current?.currentTime || 0,
+      sentAt: Date.now(),
+      ...(loop === undefined ? {} : { loop }),
+    };
+    localStorage.setItem("nexus-table-audio-control", JSON.stringify(command));
+    applyAudioControl(command);
+    publish("audio.control", command);
+  }
+
+  function applyAudioControl(command: AudioControl) {
+    if (command.action === "loop") {
+      const loop = Boolean(command.loop);
+      if (audioRef.current) audioRef.current.loop = loop;
+      setAudioLoop(loop);
+      return;
+    }
+    const player = audioRef.current;
+    if (!player) return;
+    pendingAudioControlRef.current = command;
+    if (player.readyState < HTMLMediaElement.HAVE_METADATA) {
+      player.load();
+      return;
+    }
+    pendingAudioControlRef.current = null;
+    const elapsed = command.action === "play" ? Math.max(0, (Date.now() - command.sentAt) / 1000) : 0;
+    try {
+      player.currentTime = Math.max(0, command.currentTime + elapsed);
+    } catch {
+      // O navegador aplicará a posição ao carregar os metadados da faixa.
+      pendingAudioControlRef.current = command;
+      return;
+    }
+    if (command.action === "play") {
+      player.play()
+        .then(() => {
+          setAudioPlaying(true);
+          setAudioNeedsInteraction(false);
+          setAudioError("");
+        })
+        .catch(() => {
+          pendingAudioControlRef.current = command;
+          setAudioPlaying(false);
+          setAudioNeedsInteraction(true);
+        });
+    } else {
+      player.pause();
+      if (command.action === "stop") player.currentTime = 0;
+      setAudioPlaying(false);
+      setAudioNeedsInteraction(false);
+    }
   }
 
   function toggleAudio() {
-    if (!audioRef.current || !audioUrl) return;
-    if (audioPlaying) {
-      audioRef.current.pause();
-      setAudioPlaying(false);
-      return;
-    }
-    audioRef.current
-      .play()
-      .then(() => setAudioPlaying(true))
-      .catch(() => setAudioPlaying(false));
+    if (currentRole !== "gm" || !audioUrl) return;
+    sendAudioControl(audioPlaying ? "pause" : "play");
+  }
+
+  function toggleAudioLoop() {
+    if (currentRole !== "gm") return;
+    const loop = !audioLoop;
+    setAudioLoop(loop);
+    if (audioRef.current) audioRef.current.loop = loop;
+    localStorage.setItem("nexus-table-session-audio", JSON.stringify({
+      assetId: "nexus-table-session-audio",
+      name: audioName,
+      loop,
+    }));
+    sendAudioControl("loop", loop);
+  }
+
+  function activateAudioForListener() {
+    const pending = pendingAudioControlRef.current;
+    if (pending) applyAudioControl(pending);
+    else if (audioRef.current) sendAudioControl("play");
   }
 
   useEffect(() => {
+    sessionStorage.setItem("nexus-table-audio-volume", String(audioVolume));
     if (audioRef.current) audioRef.current.volume = audioVolume / 100;
   }, [audioVolume, audioUrl]);
+
+  useEffect(() => {
+    let metadata: { assetId?: string; name?: string; loop?: boolean } | undefined;
+    try {
+      metadata = JSON.parse(localStorage.getItem("nexus-table-session-audio") || "null") as {
+        assetId?: string;
+        name?: string;
+        loop?: boolean;
+      } | undefined;
+    } catch {
+      metadata = undefined;
+    }
+    const savedAssetId = metadata?.assetId;
+    if (!savedAssetId) return;
+    const savedMetadata = { assetId: savedAssetId, name: metadata?.name, loop: metadata?.loop };
+    void getLocalAsset(savedMetadata.assetId).then((asset) => {
+      if (!asset) return;
+      replaceAudioSource(createObjectUrl(asset.blob), savedMetadata.name || asset.name);
+      const loop = savedMetadata.loop ?? true;
+      setAudioLoop(loop);
+      if (audioRef.current) audioRef.current.loop = loop;
+    }).catch(() => setAudioError("A música salva não pôde ser carregada."));
+  }, []);
+
+  useEffect(() => {
+    if (attackShooterId === null) return;
+    const cancelOutside = (event: PointerEvent) => {
+      if (mapRef.current?.contains(event.target as Node)) return;
+      cancelAttackAim();
+      setAttackHint("Mira cancelada.");
+    };
+    const cancelWithRightClick = (event: MouseEvent) => {
+      if (event.altKey) return;
+      event.preventDefault();
+      cancelAttackAim();
+      setAttackHint("Mira cancelada.");
+    };
+    document.addEventListener("pointerdown", cancelOutside);
+    document.addEventListener("contextmenu", cancelWithRightClick);
+    return () => {
+      document.removeEventListener("pointerdown", cancelOutside);
+      document.removeEventListener("contextmenu", cancelWithRightClick);
+    };
+  }, [attackShooterId]);
 
   if (!hasEnteredSession) {
     return (
@@ -1874,6 +2189,27 @@ function App() {
         ref={audioRef}
         src={audioUrl || undefined}
         loop={audioLoop}
+        onLoadedMetadata={() => {
+          const pending = pendingAudioControlRef.current;
+          if (pending) {
+            applyAudioControl(pending);
+            return;
+          }
+          try {
+            const saved = JSON.parse(localStorage.getItem("nexus-table-audio-control") || "null") as AudioControl | null;
+            if (saved && ["play", "pause", "stop", "loop"].includes(saved.action)) applyAudioControl(saved);
+          } catch {
+            // A música continua disponível mesmo se o estado salvo estiver inválido.
+          }
+        }}
+        onPlay={() => {
+          setAudioPlaying(true);
+          setAudioNeedsInteraction(false);
+        }}
+        onPause={() => setAudioPlaying(false)}
+        onError={() => {
+          if (audioUrlRef.current) setAudioError("O navegador não conseguiu reproduzir essa faixa.");
+        }}
         onEnded={() => setAudioPlaying(false)}
       />
 
@@ -2032,10 +2368,17 @@ function App() {
               </div>
               <div
                 ref={mapRef}
-                className={`battle-map ${rulerActive ? "ruler-active" : ""} ${drawingActive ? "drawing-active" : ""} ${sceneEditMode ? "scene-editing" : ""} ${panActive ? "pan-active" : ""} ${isPanning ? "is-panning" : ""}`}
+                className={`battle-map ${rulerActive ? "ruler-active" : ""} ${drawingActive ? "drawing-active" : ""} ${sceneEditMode ? "scene-editing" : ""} ${panActive ? "pan-active" : ""} ${isPanning ? "is-panning" : ""} ${attackShooterId !== null ? "attack-aiming" : ""}`}
                 role="region"
                 aria-label="Mapa interativo. Ative Mover mapa para arrastar a câmera; use Ctrl e a roda do mouse para zoom."
                 tabIndex={0}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  if (!event.altKey && attackShooterId !== null) {
+                    cancelAttackAim();
+                    setAttackHint("Mira cancelada.");
+                  }
+                }}
                 style={{
                   "--map-background": activeMapUrl ? `url("${activeMapUrl}")` : undefined,
                   backgroundSize: `${48 * mapZoom}px ${48 * mapZoom}px, ${48 * mapZoom}px ${48 * mapZoom}px, auto ${mapImageScale * mapZoom}%`,
@@ -2044,7 +2387,10 @@ function App() {
                 onPointerDown={(e) => {
                   if (e.button !== 0) return;
                   const target = e.target as HTMLElement;
-                  setTokenContextMenu(null);
+                  if (!target.closest(".map-token") && attackShooterId !== null) {
+                    cancelAttackAim();
+                    setAttackHint("Mira cancelada.");
+                  }
                   if (panActive) {
                     e.currentTarget.setPointerCapture(e.pointerId);
                     mapPanDragRef.current = {
@@ -2106,6 +2452,18 @@ function App() {
                         {kind === "marker" ? "＋ Marcador" : kind === "cover" ? "▰ Cobertura" : "⚠ Perigo"}
                       </button>
                     ))}
+                    <label className="scene-image-upload">
+                      ＋ PNG
+                      <input
+                        type="file"
+                        accept="image/png,.png"
+                        onChange={(event) => {
+                          void addSceneImage(event.currentTarget.files?.[0]);
+                          event.currentTarget.value = "";
+                        }}
+                      />
+                    </label>
+                    {sceneImageError && <small className="scene-image-error" role="alert">{sceneImageError}</small>}
                     <small>{scenePlacementKind ? "Clique em um espaço vazio do mapa para inserir." : "Selecione um elemento para mover ou editar."}</small>
                   </div>
                 )}
@@ -2137,8 +2495,11 @@ function App() {
                       left: `${sceneDragVisual?.id === element.id ? sceneDragVisual.x : element.x}%`,
                       top: `${sceneDragVisual?.id === element.id ? sceneDragVisual.y : element.y}%`,
                       "--scene-color": element.color,
+                      ...(element.kind === "image" ? {
+                        width: `${Math.max(1, element.imageWidth || 1) * (element.imageScale || 100) / 100}px`,
+                      } : {}),
                     } as React.CSSProperties}
-                    aria-label={`${element.name}, ${element.kind === "marker" ? "marcador" : element.kind === "cover" ? "cobertura" : "perigo"}`}
+                    aria-label={`${element.name}, ${element.kind === "image" ? "imagem PNG" : element.kind === "marker" ? "marcador" : element.kind === "cover" ? "cobertura" : "perigo"}`}
                     disabled={!sceneEditMode || currentRole !== "gm"}
                     onPointerDown={(event) => {
                       event.stopPropagation();
@@ -2158,7 +2519,11 @@ function App() {
                       }
                     }}
                   >
-                    <span>{element.kind === "marker" ? "◆" : element.kind === "cover" ? "▰" : "⚠"}</span>
+                    {element.kind === "image" ? (
+                      <img className="scene-image-art" src={element.imageAssetId ? assetUrls[element.imageAssetId] : undefined} alt="" />
+                    ) : (
+                      <span>{element.kind === "marker" ? "◆" : element.kind === "cover" ? "▰" : "⚠"}</span>
+                    )}
                     <small>{element.name}</small>
                   </button>
                 ))}
@@ -2176,9 +2541,41 @@ function App() {
                         } as React.CSSProperties
                       }
                       onPointerDown={(e) => {
+                        if (e.button === 2 && e.altKey) {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          if (rulerActive || drawingActive || sceneEditMode || panActive) return;
+                          if (currentRole !== "gm" && !canEditToken(token)) {
+                            setAttackHint("Você só pode atirar com um token próprio ou atribuído pelo Mestre.");
+                            return;
+                          }
+                          attackClickCountRef.current = 0;
+                          setAttackShooterId(token.id);
+                          setSelectedTokenId(token.id);
+                          setSelectedSceneElementId(null);
+                          setAttackHint(`${token.name} pronto. Clique em alvos até cinco vezes; cada clique dispara um tiro.`);
+                          return;
+                        }
+                        if (e.button === 0 && attackShooterId !== null) {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          if (rulerActive || drawingActive || sceneEditMode || panActive) return;
+                          const attacker = tokensRef.current.find((item) => item.id === attackShooterId);
+                          if (!attacker || (currentRole !== "gm" && !canEditToken(attacker))) {
+                            cancelAttackAim();
+                            setAttackHint("Atacante indisponível ou sem permissão.");
+                            return;
+                          }
+                          if (attacker.id === token.id) {
+                            setAttackHint("Escolha outro token como alvo.");
+                            return;
+                          }
+                          shootAtToken(attacker, token);
+                          return;
+                        }
                         if (e.button !== 0) return;
                         if (rulerActive || drawingActive || sceneEditMode || panActive) return;
-                        if (canEditToken(token)) {
+                        if (canMoveToken(token)) {
                           e.currentTarget.setPointerCapture(e.pointerId);
                           dragRef.current = token.id;
                           dragStartPositionRef.current = { x: token.x, y: token.y };
@@ -2188,24 +2585,16 @@ function App() {
                         setSelectedTokenId(token.id);
                         setSelectedSceneElementId(null);
                         setAttackHint(canEditToken(token)
-                          ? "Botão direito no alvo e escolha Atacar no menu."
+                          ? "Use Alt + botão direito para preparar um tiro."
                           : "Token bloqueado: selecione um token que você controla para atacar.");
                       }}
                       onContextMenu={(event) => {
                         event.preventDefault();
-                        event.stopPropagation();
-                        if (rulerActive || drawingActive || sceneEditMode || panActive) return;
-                        const bounds = mapRef.current?.getBoundingClientRect();
-                        if (!bounds) return;
-                        setTokenContextMenu({
-                          targetId: token.id,
-                          x: Math.max(8, Math.min(bounds.width - 208, event.clientX - bounds.left)),
-                          y: Math.max(8, Math.min(bounds.height - 96, event.clientY - bounds.top)),
-                        });
+                        if (event.altKey) event.stopPropagation();
                       }}
-                      className={`map-token ${token.enemy ? "enemy" : ""} shape-${token.shape || "circle"} size-${token.size || "medium"} border-${token.borderStyle || "none"} ${canEditToken(token) ? "" : "locked"}`}
-                      aria-label={`${token.name}, ${canEditToken(token) ? "arrastável" : `bloqueado; proprietário: ${token.owner || "nenhum"}`}`}
-                      title={canEditToken(token) ? `Mover ${token.name}` : `Bloqueado • Proprietário: ${token.owner || "nenhum"}`}
+                      className={`map-token ${token.enemy ? "enemy" : ""} shape-${token.shape || "circle"} size-${token.size || "medium"} border-${token.borderStyle || "none"} ${canMoveToken(token) ? "" : "locked"} ${attackShooterId === token.id ? "attack-shooter" : ""} ${attackFeedback?.attackerId === token.id ? `attack-feedback-shooter-${attackFeedback.phase}` : ""} ${attackFeedback?.targetId === token.id ? `attack-feedback-target-${attackFeedback.phase}` : ""}`}
+                      aria-label={`${token.name}, ${canMoveToken(token) ? "arrastável" : `bloqueado; proprietário: ${token.owner || "nenhum"}`}`}
+                      title={canMoveToken(token) ? `Mover ${token.name}` : `Bloqueado • Proprietário: ${token.owner || "nenhum"}`}
                     >
                       {(token.imageAssetId && assetUrls[token.imageAssetId]) || token.image ? (
                         <img src={(token.imageAssetId && assetUrls[token.imageAssetId]) || token.image} alt="" />
@@ -2276,73 +2665,21 @@ function App() {
                       className="attack-projectile"
                       cx={attackEffect.animated ? attackEffect.startX : attackEffect.endX}
                       cy={attackEffect.animated ? attackEffect.startY : attackEffect.endY}
-                      r="0.85"
+                      r="0.5"
                     >
                       {attackEffect.animated && (
                         <animateMotion
-                          dur="520ms"
+                          dur="180ms"
                           path={`M ${attackEffect.startX} ${attackEffect.startY} L ${attackEffect.endX} ${attackEffect.endY}`}
                           fill="freeze"
                           rotate="auto"
                         />
                       )}
                     </circle>
-                    <circle className="attack-impact" cx={attackEffect.endX} cy={attackEffect.endY} r="1.5" />
+                    <circle className="attack-impact" cx={attackEffect.endX} cy={attackEffect.endY} r="0.9" />
                   </svg>
                 )}
                 </div>
-                {tokenContextMenu && (() => {
-                  const target = tokens.find((item) => item.id === tokenContextMenu.targetId);
-                  if (!target) return null;
-                  const attacker = selectedTokenId === null
-                    ? undefined
-                    : tokens.find((item) => item.id === selectedTokenId);
-                  const canAttack = !!attacker &&
-                    attacker.id !== target.id &&
-                    (currentRole === "gm" || canEditToken(attacker));
-                  const canSetAttacker = canEditToken(target);
-                  return (
-                    <div
-                      className="token-context-menu"
-                      role="menu"
-                      style={{ left: tokenContextMenu.x, top: tokenContextMenu.y }}
-                      onPointerDown={(event) => event.stopPropagation()}
-                    >
-                      <small>ALVO · {target.name}</small>
-                      {canAttack && attacker ? (
-                        <button
-                          role="menuitem"
-                          onClick={() => {
-                            fireTokenAttack(attacker, target);
-                            setTokenContextMenu(null);
-                          }}
-                        >
-                          <Icon name="dice" size={14} /> Atacar com {attacker.name}
-                        </button>
-                      ) : (
-                        <button
-                          role="menuitem"
-                          disabled={!canSetAttacker}
-                          onClick={() => {
-                            if (!canSetAttacker) return;
-                            setSelectedTokenId(target.id);
-                            setSelectedSceneElementId(null);
-                            setAttackHint(`${target.name} selecionado como atacante. Abra o menu do token alvo e escolha Atacar.`);
-                            setTokenContextMenu(null);
-                          }}
-                        >
-                          <Icon name="shield" size={14} />
-                          {canSetAttacker ? `Usar ${target.name} como atacante` : "Selecione um atacante próprio"}
-                        </button>
-                      )}
-                      <button
-                        className="context-menu-cancel"
-                        role="menuitem"
-                        onClick={() => setTokenContextMenu(null)}
-                      >Cancelar</button>
-                    </div>
-                  );
-                })()}
                 {drawingActive && (
                   <div className="drawing-tools" onPointerDown={(e) => e.stopPropagation()}>
                     <span>DESENHO</span>
@@ -2721,6 +3058,21 @@ function App() {
                             <option value="large">Grande</option>
                           </select>
                         </label>
+                        {selected.kind === "image" && (
+                          <label className="scene-image-scale-control">
+                            Tamanho da imagem · original {selected.imageWidth} × {selected.imageHeight} px
+                            <input
+                              type="range"
+                              min="10"
+                              max="300"
+                              step="1"
+                              value={selected.imageScale || 100}
+                              aria-label="Escala proporcional da imagem PNG"
+                              onChange={(event) => updateSceneElement(selected.id, { imageScale: Number(event.target.value) })}
+                            />
+                            <output>{selected.imageScale || 100}%</output>
+                          </label>
+                        )}
                         <button className="scene-delete" onClick={() => removeSceneElement(selected.id)}>
                           <Icon name="trash" size={14} /> Remover elemento
                         </button>
@@ -2804,8 +3156,14 @@ function App() {
                   <button>
                     <i /> Ocultar nomes de inimigos
                   </button>
-                  <button>
-                    <i className="on" /> Permitir mover tokens
+                  <button
+                    className={playersCanMoveOtherTokens ? "active" : ""}
+                    aria-pressed={playersCanMoveOtherTokens}
+                    onClick={() => setPlayersCanMoveOtherTokens((allowed) => !allowed)}
+                    title="Controla somente tokens que não pertencem ao jogador"
+                  >
+                    <i className={playersCanMoveOtherTokens ? "on" : ""} />
+                    {playersCanMoveOtherTokens ? "Bloquear movimento de tokens alheios" : "Permitir mover tokens alheios"}
                   </button>
                   <button onClick={() => setPlayersCanDraw((allowed) => !allowed)}>
                     <i className={playersCanDraw ? "on" : ""} />
@@ -3199,7 +3557,7 @@ function App() {
                     <span />
                   </div>
                   <span className="playing-label">
-                    {audioPlaying ? "TOCANDO AGORA" : "PAUSADO"}
+                    {audioPlaying ? "TOCANDO AGORA" : currentRole === "gm" ? "PAUSADO" : "PAUSADO PELO MESTRE"}
                   </span>
                   <strong title={audioName}>{audioName}</strong>
                   <div className="sound-wave" aria-hidden="true">
@@ -3207,11 +3565,20 @@ function App() {
                       <i key={index} style={{ height: `${8 + ((index * 7) % 22)}px` }} />
                     ))}
                   </div>
-                  <button className="play-button" onClick={toggleAudio}>
-                    <Icon name={audioPlaying ? "pause" : "play"} size={23} />
-                  </button>
+                  {currentRole === "gm" ? (
+                    <button className="play-button" onClick={toggleAudio} aria-label={audioPlaying ? "Pausar música para a sessão" : "Reproduzir música para a sessão"}>
+                      <Icon name={audioPlaying ? "pause" : "play"} size={23} />
+                    </button>
+                  ) : (
+                    <p className="shared-audio-status">O Mestre controla a reprodução para todos.</p>
+                  )}
+                  {audioNeedsInteraction && (
+                    <button className="audio-activate" onClick={activateAudioForListener}>
+                      Ativar áudio neste navegador
+                    </button>
+                  )}
                   <label className="volume-control">
-                    <span>VOLUME</span>
+                    <span>VOLUME LOCAL</span>
                     <input
                       type="range"
                       min="0"
@@ -3221,48 +3588,65 @@ function App() {
                     />
                     <b>{audioVolume}%</b>
                   </label>
-                  <button
-                    className={`loop-toggle ${audioLoop ? "active" : ""}`}
-                    onClick={() => setAudioLoop((loop) => !loop)}
-                  >
-                    <i />
-                    Repetir faixa
-                  </button>
-                  <div className="track-actions">
-                    <label>
-                      <Icon name="upload" /> Trocar música
-                      <input
-                        type="file"
-                        accept="audio/*"
-                        onChange={(e) => loadAudio(e.target.files?.[0])}
-                      />
-                    </label>
-                    <button onClick={clearAudio}>
-                      Remover
-                    </button>
-                  </div>
+                  {currentRole === "gm" && (
+                    <>
+                      <button
+                        className={`loop-toggle ${audioLoop ? "active" : ""}`}
+                        onClick={toggleAudioLoop}
+                        aria-pressed={audioLoop}
+                      >
+                        <i />
+                        Repetir faixa para todos
+                      </button>
+                      <div className="track-actions">
+                        <label>
+                          <Icon name="upload" /> Trocar música
+                          <input
+                            type="file"
+                            accept="audio/*"
+                            onChange={(e) => {
+                              void loadAudio(e.target.files?.[0]);
+                              e.currentTarget.value = "";
+                            }}
+                          />
+                        </label>
+                        <button onClick={clearAudio}>Remover</button>
+                      </div>
+                    </>
+                  )}
                 </div>
               ) : (
                 <div className="music-empty">
                   <div className="music-empty-icon">
                     <Icon name="music" size={37} />
                   </div>
-                  <h3>Adicione uma trilha</h3>
-                  <p>Escolha uma música ou som ambiente salvo no seu dispositivo.</p>
-                  <label className="primary-btn">
-                    <Icon name="upload" /> Escolher áudio
-                    <input
-                      type="file"
-                      accept="audio/*"
-                      onChange={(e) => loadAudio(e.target.files?.[0])}
-                    />
-                  </label>
-                  <small>MP3, WAV, OGG e outros formatos do navegador.</small>
+                  <h3>{currentRole === "gm" ? "Adicione uma trilha" : "Aguardando o Mestre"}</h3>
+                  <p>{currentRole === "gm"
+                    ? "Escolha uma música para compartilhar com as abas desta mesa neste navegador."
+                    : "A música escolhida pelo Mestre aparecerá aqui para você ouvir."}</p>
+                  {currentRole === "gm" && (
+                    <>
+                      <label className="primary-btn">
+                        <Icon name="upload" /> Escolher áudio
+                        <input
+                          type="file"
+                          accept="audio/*"
+                          onChange={(e) => {
+                            void loadAudio(e.target.files?.[0]);
+                            e.currentTarget.value = "";
+                          }}
+                        />
+                      </label>
+                      <small>MP3, WAV, OGG e outros formatos do navegador. Até 50 MB.</small>
+                    </>
+                  )}
                 </div>
               )}
+              {audioError && <p className="file-error audio-error" role="alert">{audioError}</p>}
               <div className="local-audio-note">
-                <Icon name="lock" size={14} />
-                O áudio permanece somente neste navegador.
+                {currentRole === "gm"
+                  ? "A faixa e os comandos sincronizam entre abas da mesa abertas neste navegador."
+                  : "Ajustar o volume altera somente o áudio ouvido por você."}
               </div>
             </div>
           )}

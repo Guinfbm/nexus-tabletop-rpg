@@ -10,7 +10,11 @@ export type TableEventType =
   | "map.attack"
   | "gm.notes"
   | "gm.initiative"
-  | "gm.drawing-permission";
+  | "gm.drawing-permission"
+  | "gm.token-movement-permission"
+  | "audio.track"
+  | "audio.control"
+  | "audio.clear";
 
 export type TableEvent<T = unknown> = {
   version: 1;

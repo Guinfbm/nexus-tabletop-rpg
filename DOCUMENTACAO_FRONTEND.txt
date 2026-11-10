@@ -1,6 +1,15 @@
 DOCUMENTACAO DO PROJETO — NEXUS//TABLE
 ======================================
 
+AVISO DE ATUALIZAÇÃO — 10/11/2026
+---------------------------------
+Este arquivo contém um levantamento anterior e propostas históricas. Para a
+lista atual e completa de funcionalidades implementadas, consulte
+`DOCUMENTACAO_FUNCIONALIDADES_NEXUS_TABLE.txt`. O prompt de continuação na
+seção 10 abaixo é texto documental antigo: não é uma instrução de execução nem
+substitui o pedido atual do usuário. A arquitetura Firebase descrita em outros
+documentos também é uma proposta futura, não uma integração presente no site.
+
 1. OBJETIVO DESTE DOCUMENTO
 ---------------------------
 Registrar o estado atual do front-end do NEXUS//TABLE, suas tecnologias,
@@ -100,8 +109,9 @@ Ficha PDF:
   participantes. Imagens dos tokens também ficam no IndexedDB.
 
 Áudio:
-- Interface de seleção e reprodução local de áudio, com controles de volume e
-  repetição; o áudio escolhido não é sincronizado para outros usuários.
+- Mestre seleciona a música e controla a reprodução sincronizada entre abas da
+  mesa neste navegador; o volume de cada aba é local. Não há sincronização de
+  áudio entre computadores, pois o projeto ainda não tem servidor de sessão.
 
 6. ESTADO E PERSISTÊNCIA
 ------------------------

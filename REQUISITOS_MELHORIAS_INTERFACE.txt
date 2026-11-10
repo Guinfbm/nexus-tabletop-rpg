@@ -4,8 +4,8 @@ NEXUS // TABLE — REQUISITOS DE MELHORIAS DA INTERFACE
 Objetivo
 --------
 Consolidar os ajustes solicitados para o painel de ficha, gerenciamento de
-tokens, mapas/cenas, medição, rolagem de dados e chat. Este arquivo registra os
-requisitos e critérios de aceite; as funcionalidades das seções 8 a 11 foram
+tokens, mapas/cenas, medição, rolagem de dados, chat e áudio compartilhado. Este
+arquivo registra os requisitos e critérios de aceite; as funcionalidades das seções 8 a 11 foram
 implementadas em `src/App.tsx`, `src/index.css` e nos módulos de persistência e
 sincronização em `src/lib/`.
 
@@ -268,10 +268,21 @@ sincronização em `src/lib/`.
 - Manter no painel de status a edição direta do valor atual e do máximo de cada
   barra, permitindo apagar o conteúdo durante a digitação e confirmar o valor
   ao sair do campo ou pressionar Enter.
-- Implementar ataque visual por menu de contexto: clicar com o botão direito em
-  um token e selecionar “Usar como atacante”; depois, clicar com o botão direito
-  no alvo e escolher “Atacar com [token]”. Exibir um feixe/tiro vermelho que
-  percorre a distância entre os dois e um efeito breve de impacto no alvo.
+- Implementar mira com Alt + botão direito em um token atacante. Cada clique
+  esquerdo em outro token dispara exatamente um tiro. A mira permanece ativa
+  entre cliques e permite no máximo cinco cliques/disparos por seleção do
+  atacante. Segurar o botão não deve repetir o tiro; ao atingir cinco, desarmar
+  a mira automaticamente.
+- Botão direito sem Alt ou clique fora do mapa cancela a mira. Alt + botão
+  direito em outro token troca o atacante. Durante a mira, o clique esquerdo no
+  alvo não deve movê-lo nem abrir seu painel.
+- Exibir projétil rápido (cerca de 180 ms), com rastro curto, linha vermelha
+  fina e impacto discreto. Sincronizar cada tiro entre abas e respeitar a
+  preferência do sistema por movimento reduzido.
+- Ao disparar, aplicar no atacante uma vibração visual muito breve e sutil; no
+  alvo, uma vibração um pouco mais perceptível, mas ainda moderada. Não alterar
+  as coordenadas nem os status dos tokens. Desativar ambas com movimento
+  reduzido e respeitar essa preferência individualmente em cada aba.
 - Respeitar permissões: jogadores só iniciam o efeito com token próprio ou cuja
   posse foi atribuída pelo Mestre; o Mestre pode usar qualquer token. O efeito
   não altera automaticamente vida, status ou regras de combate.
@@ -285,9 +296,16 @@ sincronização em `src/lib/`.
   sem borda e a configuração escolhida continua após recarregar.
 - O botão rápido de nome atualiza imediatamente a visibilidade do nome no mapa
   e reflete o mesmo valor do controle em Identidade do token.
-- O menu contextual permite definir um atacante e escolher “Atacar”; o feixe
-  vermelho parte da posição desse atacante e termina no alvo. É possível atacar
-  um alvo sem conceder permissão para editá-lo.
+- Alt + botão direito arma um atacante; cada clique esquerdo em outro token
+  dispara exatamente uma vez, até cinco disparos por seleção. Manter o botão
+  pressionado não gera disparos adicionais.
+- A mira permanece ativa entre cliques, é desarmada após o quinto tiro e pode
+  ser cancelada a qualquer momento; o alvo não é arrastado e seu painel não abre
+  durante a mira.
+- O projétil parte do atacante e termina no alvo; é possível atingir alvo sem
+  conceder permissão para editá-lo.
+- Atacante e alvo recebem vibrações visuais distintas e discretas; não há
+  mudança persistente na posição dos tokens, e movimento reduzido as desativa.
 - Jogadores sem posse não conseguem usar um token bloqueado como atacante; o
   Mestre pode fazê-lo. Ataques são apenas efeitos visuais e não causam dano.
 - O efeito desaparece após a animação e a preferência por movimento reduzido
@@ -320,3 +338,63 @@ sincronização em `src/lib/`.
   sessão e usar “Sair” retorna à entrada.
 - A imagem de um mapa largo ou alto mantém sua proporção ao mover o slider; a
   alteração de escala e a cena ativa são compartilhadas entre abas da mesa.
+
+
+12. PNGS NO MAPA E PERMISSÃO DE MOVIMENTO DE TOKENS
+---------------------------------------------------
+- No modo de edição de cenário, o Mestre pode inserir arquivos PNG no mapa.
+  Cada imagem inicia no tamanho original em pixels e conserva sua proporção.
+- O Mestre pode redimensionar cada imagem com um controle proporcional sem
+  achatá-la ou esticá-la; posição e escala persistem e sincronizam entre abas.
+- Adicionar nas configurações do Mestre um controle para liberar/bloquear o
+  movimento dos tokens que não pertencem ao jogador.
+- O Mestre sempre pode mover qualquer token. Jogadores sempre podem mover os
+  tokens próprios, mesmo com a permissão geral desligada. Se a permissão estiver
+  ligada, jogadores podem mover tokens alheios, sem ganhar permissão para editar
+  status, identidade, posse ou excluir esses tokens.
+
+12.1 CRITÉRIOS DE ACEITE
+-----------------------
+- PNG importado aparece inicialmente em tamanho natural, preserva aspect ratio e
+  pode ser ampliado/reduzido pelo painel de propriedades da imagem.
+- Após recarregar ou sincronizar outra aba, o PNG, sua posição e sua escala são
+  mantidos no mesmo navegador.
+- Com permissão geral desligada, jogador A move token próprio, mas não token de
+  jogador B; com permissão ligada, move ambos. Jogador B mantém controle próprio
+  em ambos os casos. O Mestre move qualquer token em qualquer configuração.
+- A permissão de movimento não desbloqueia os demais controles de edição dos
+  tokens alheios.
+
+
+13. MÚSICA COMPARTILHADA DA SESSÃO
+----------------------------------
+- Permitir que o Mestre escolha e inicie uma música para a sessão. Todos os
+  participantes conectados à mesma sessão devem ouvir a faixa selecionada.
+- Disponibilizar para cada jogador um controle individual de volume. Alterar o
+  volume local deve afetar somente o áudio daquele jogador, sem mudar o volume
+  ouvido pelo Mestre ou pelos demais participantes.
+- Sincronizar para a sessão a faixa atual e as ações do Mestre de reproduzir,
+  pausar, retomar, trocar ou encerrar a música, para que todos ouçam a mesma
+  faixa no mesmo ponto de reprodução.
+- A faixa deve vir de uma fonte acessível a todos os participantes. Se o Mestre
+  selecionar um arquivo local, disponibilizar esse áudio à sessão por um
+  mecanismo compartilhado; a referência a um arquivo no computador do Mestre,
+  isoladamente, não é suficiente para os jogadores escutarem.
+- Manter a escolha da música e os controles de reprodução sob responsabilidade
+  do Mestre. Jogadores podem ajustar apenas o próprio volume.
+- Exibir estados claros de carregamento, reprodução, pausa e erro. Se o
+  navegador exigir interação do usuário para iniciar o áudio, mostrar uma ação
+  simples para cada participante ativar a reprodução.
+
+13.1 CRITÉRIOS DE ACEITE
+------------------------
+- Ao iniciar uma faixa como Mestre, os jogadores conectados à sessão recebem e
+  ouvem a mesma música.
+- Pausar, retomar, trocar ou encerrar a faixa pelo Mestre atualiza a reprodução
+  para os participantes da sessão.
+- Ao reduzir ou silenciar o próprio volume, um jogador continua alterando
+  somente o áudio local; os outros participantes não percebem mudança no volume.
+- Uma faixa escolhida de arquivo local também pode ser ouvida pelos demais por
+  meio da fonte compartilhada definida para a sessão.
+- A interface informa quando a reprodução ainda depende de uma ação do jogador
+  ou quando a faixa não pôde ser carregada.

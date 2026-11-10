@@ -1,0 +1,288 @@
+NEXUS//TABLE — DOCUMENTAÇÃO COMPLETA DAS FUNCIONALIDADES
+========================================================
+
+Atualizado em: 10/11/2026
+Escopo: funcionalidades presentes no front-end atual.
+
+Este manual descreve o que a interface realmente faz. A escolha de papel é
+local, e a sincronização disponível é entre abas da mesma origem no mesmo
+navegador. Itens identificados como demonstrativos ou pendentes não devem ser
+interpretados como recursos online ou já funcionais.
+
+
+1. VISÃO GERAL
+--------------
+NEXUS//TABLE é uma mesa virtual de RPG com tema cyberpunk. A interface é uma
+aplicação React/TypeScript executada no navegador e reúne mapa tático, tokens,
+ferramentas de mestre, chat, rolagens, fichas PDF e áudio local.
+
+Não há servidor de jogo ou banco de dados conectado. Não é possível criar uma
+sala online nem compartilhar a partida com outro computador. A entrada e os
+papéis Mestre/Jogador são identificações locais para usar a interface; não são
+autenticação nem uma barreira de segurança.
+
+
+2. ENTRADA E IDENTIDADE DA SESSÃO
+---------------------------------
+- Na primeira entrada, informe um nome de até 32 caracteres e escolha Mestre ou
+  Jogador. O botão “Entrar na sessão” abre a mesa.
+- Nome e papel são guardados em `sessionStorage` da aba. Recarregar a mesma aba
+  restaura a sessão; o botão “Sair” volta à tela inicial para trocar a
+  identificação.
+- O seletor Mestre/Jogador no cabeçalho também alterna a visualização durante
+  o uso e salva o papel nesta aba.
+- O nome pode ser alterado no campo “Nome nesta aba” do Chat.
+- Como não há conta nem servidor, qualquer pessoa com acesso à interface pode
+  alternar o papel para Mestre. A seleção não protege conteúdo nem substitui
+  autorização de servidor.
+
+
+3. NAVEGAÇÃO DA INTERFACE
+-------------------------
+- “Mesa” abre o tabuleiro e o mapa.
+- “Mestre” abre a central de iniciativa, notas, tokens reservados e fila de
+  mapas; a aba aparece quando o papel local está como Mestre.
+- O painel lateral alterna entre “Chat”, “Dados”, “Ficha” e “Áudio”.
+- O painel lateral pode ser redimensionado pelo divisor, maximizado/restaurado
+  e fechado. Em telas estreitas, o menu e o botão flutuante abrem o painel.
+- “Sincronizar abas” explica o compartilhamento local. Não cria convite nem
+  conecta participantes remotos.
+
+
+4. MESA, MAPA E CÂMERA
+----------------------
+
+4.1 Fundo e fila de mapas
+- O mapa de demonstração aparece quando não há uma cena carregada.
+- Na central do Mestre, “Fila de mapas” aceita uma ou várias imagens. Cada
+  arquivo precisa ser uma imagem e ter até 40 MB.
+- A fila permite selecionar a cena que será exibida e remover uma cena, com
+  confirmação. Ao adicionar várias imagens, a primeira nova cena fica ativa.
+- A imagem ativa ocupa o fundo do grid. O controle “Escala do mapa” varia de
+  40% a 200% e preserva a proporção original da imagem.
+- Imagens são guardadas no IndexedDB do navegador; nomes, fila, cena ativa e
+  escala usam armazenamento local. A seleção/fila/escala são comunicadas às
+  outras abas abertas da mesa.
+
+4.2 Grid, zoom e movimento panorâmico
+- A grade do mapa permanece visível sobre o fundo. Uma célula representa 5 ft,
+  equivalentes a 1,524 m.
+- “Unidade” alterna a exibição entre pés (ft) e metros (m), incluindo a régua e
+  a indicação de escala do grid.
+- Os botões −/+ alteram o zoom de 50% a 200%. Com o mapa focado, Ctrl + roda do
+  mouse também aproxima/afasta; Ctrl + “+”/“−” ajusta pelo teclado.
+- Ative “Mover mapa” e arraste uma área vazia para deslocar a câmera sem mover
+  tokens. Fundo, grid, desenhos e elementos do cenário acompanham a câmera.
+- Pan e zoom são estados da aba atual e voltam ao padrão ao recarregar.
+
+4.3 Régua
+- Ative “Régua” e arraste entre dois pontos vazios do mapa. A distância é
+  calculada usando a escala de 5 ft por célula e mostrada na unidade selecionada.
+- O valor da régua acompanha a conversão entre ft e m.
+
+4.4 Desenhos
+- “Desenhar” ativa o traço sobre o mapa. A paleta oferece ciano, vermelho,
+  amarelo e branco; “Desfazer” remove o último traço e “Limpar” apaga todos.
+- O Mestre sempre pode desenhar. Jogadores podem desenhar quando a opção
+  correspondente estiver habilitada na central do Mestre.
+- Desenhos são gravados no localStorage desta origem, mas não são transmitidos
+  pelo canal de eventos entre abas.
+
+4.5 Elementos do cenário
+- O Mestre ativa “Cenário” e escolhe Marcador, Cobertura ou Perigo. Depois,
+  clica em uma área vazia para adicionar o elemento.
+- O Mestre também pode adicionar PNGs de até 20 MB pelo botão “PNG”. Cada
+  imagem entra no centro do mapa no tamanho original em pixels, sem deformação.
+  Selecione-a para ajustar a escala proporcional de 10% a 300% ou arraste-a
+  enquanto a edição de cenário estiver ativa.
+- Os arquivos PNG ficam no IndexedDB local; posição e escala são persistidas e
+  comunicadas às outras abas do mesmo navegador.
+- Elementos existentes podem ser selecionados e arrastados. O painel de
+  propriedades edita nome, cor e tamanho ou remove o elemento.
+- Elementos de cenário são persistidos localmente e sincronizados entre abas.
+
+
+5. TOKENS E STATUS
+------------------
+- “Token” no mapa e “Criar encontro” na central adicionam um token ao tabuleiro.
+  Jogadores que criam um token ficam como seu proprietário local.
+- O Mestre pode preparar tokens reservados invisíveis aos jogadores e revelá-los
+  pela central. Eles só aparecem no mapa depois de revelados.
+- Clique com o botão esquerdo em um token para selecioná-lo; arraste para mover.
+  A posição final é salva e comunicada às outras abas ao soltar o token.
+- O painel do token permite editar nome, cor, imagem, formato (círculo,
+  quadrado ou hexágono), tamanho e barras de status.
+- O slider ajusta o tamanho em pixels. O controle de borda alterna “Sem borda”
+  e “Com borda”; cada token começa sem borda. O nome abaixo do token pode ser
+  ocultado no painel de status ou nas configurações de identidade.
+- Imagens de token aceitam arquivos de imagem de até 15 MB e ficam no IndexedDB
+  local.
+- Para cada barra, é possível editar valor atual e máximo. Durante a digitação o
+  campo pode ficar vazio; Enter ou sair do campo confirma. Valor atual deve ser
+  inteiro não negativo e fica limitado ao máximo; máximo deve ser inteiro
+  positivo. Entrada inválida mantém o último valor válido.
+- As barras podem ser exibidas/ocultadas no mapa, adicionadas ou removidas. “Ver
+  todos” alterna entre mostrar as barras de todos os tokens e só do selecionado.
+- O Mestre pode atribuir ou retirar a posse de um token na configuração de
+  identidade. Jogadores só editam tokens cujo proprietário corresponde ao nome
+  da sessão; o Mestre pode editar todos. Tokens bloqueados continuam visíveis,
+  mas não podem ser editados por jogadores sem posse. O ícone de cadeado foi
+  removido.
+- Na Central do Mestre, “Permitir mover tokens alheios” libera ou bloqueia o
+  movimento de tokens que não pertencem ao jogador. Isso não libera edição de
+  status ou identidade. Cada jogador sempre pode mover seus próprios tokens,
+  mesmo com a opção desligada; o Mestre pode mover qualquer token.
+
+5.1 Ataque visual
+- Use Alt + botão direito em um token para prepará-lo como atacante. O mapa
+  destaca o atacante e mostra a orientação de mira.
+- Clique com o botão esquerdo em outro token para disparar um tiro. Cada clique
+  conta como um disparo; a mira permanece ativa entre cliques e permite até
+  cinco cliques por seleção do atacante. Segurar o botão não repete os tiros.
+  Ao atingir cinco, a mira é desativada automaticamente.
+- Um clique direito sem Alt ou um clique fora do mapa cancela a mira. Alt +
+  botão direito em outro token troca o atacante selecionado.
+- O mapa exibe um projétil com feixe vermelho fino, rastro curto e impacto
+  breve; cada tiro é sincronizado entre abas abertas da mesa.
+- O token atacante recebe uma vibração visual muito rápida e discreta; o alvo
+  recebe uma vibração um pouco mais perceptível, ainda curta e moderada. A
+  vibração não altera a posição do token e é desativada com movimento reduzido.
+- Jogadores só podem atacar com tokens que controlam; o Mestre pode usar
+  qualquer token. O efeito não reduz vida nem aplica dano automaticamente.
+- Durante a mira, clicar no alvo não o arrasta nem abre seu painel. A ação não
+  funciona durante régua, desenho, edição do cenário ou pan. Movimento reduzido
+  desativa a animação de deslocamento.
+
+
+6. CENTRAL DO MESTRE
+--------------------
+- **Iniciativa:** permite alterar valores e ordenar a lista em ordem decrescente.
+  A lista inicial contém participantes de demonstração.
+- **Notas secretas:** texto guardado localmente e sincronizado entre abas.
+- **Permissão de desenho:** alterna a possibilidade de jogadores desenharem.
+- **Movimento de tokens alheios:** libera ou bloqueia arrastar tokens de outros
+  jogadores; cada jogador continua movendo os próprios tokens.
+- **Fila de mapas:** importar imagens, selecionar a cena ativa e remover cenas.
+- **Tokens reservados:** preparar token oculto e revelá-lo no tabuleiro.
+- “Adicionar participante” na iniciativa ainda é apenas visual e não executa
+  uma ação. Os controles de névoa e ocultar nomes de inimigos ainda são
+  demonstrativos.
+
+
+7. CHAT E DADOS
+---------------
+
+7.1 Chat
+- Envie texto pelo botão de envio ou pela tecla Enter. O autor é o nome definido
+  nesta aba; cada mensagem exibe horário local.
+- O histórico é armazenado no navegador e limitado às 300 mensagens mais
+  recentes. Mensagens e limpeza são comunicadas às outras abas.
+- O botão “Limpar” aparece no papel Mestre, pede confirmação e apaga o histórico
+  local compartilhado entre abas.
+- As mensagens iniciais são conteúdo de demonstração na primeira execução.
+
+7.2 Rolagem de dados
+- Monte até seis grupos, por exemplo `2d6 + 1d10`. Cada grupo aceita de 1 a 20
+  dados e qualquer tipo de d1 a d100.
+- Adicione/remova grupos e use os controles +/− para ajustar o modificador. O
+  modificador é aplicado uma vez ao total combinado.
+- A rolagem mostra os resultados individuais, a soma de cada grupo, modificador
+  e total em uma mensagem do chat. Durante a rolagem, os controles ficam
+  desativados e o dado é animado; a preferência por movimento reduzido é
+  respeitada.
+- Cada d10 usa a regra crítica de Cyberpunk RED: natural 10 rola um d10 extra e
+  soma; natural 1 rola um d10 extra e subtrai. Falhas críticas podem resultar em
+  total negativo. Em rolagens sem falha crítica, o total mínimo é zero.
+- As quantidades, tipos e modificador são configurações desta interface; os
+  resultados publicados viram mensagens locais e são sincronizados entre abas.
+
+
+8. FICHA PDF E ÁUDIO
+--------------------
+
+8.1 Ficha PDF
+- Na aba “Ficha”, selecione um PDF local de até 30 MB. Ele abre no visualizador
+  lateral, que ocupa a altura disponível.
+- Os botões −, 100% e + ajustam o zoom entre 50% e 200%. “Remover” apaga a ficha
+  local selecionada.
+- O PDF fica no IndexedDB e a referência da ficha é específica à aba; não é
+  enviada nem exibida automaticamente em outras abas ou computadores.
+
+8.2 Áudio
+- O Mestre escolhe a faixa e controla reproduzir, pausar, repetição, troca e
+  remoção. A música e esses comandos sincronizam entre abas abertas da mesa no
+  mesmo navegador; os controles de volume de cada aba são independentes.
+- Cada jogador pode ativar a reprodução no próprio navegador se ele bloquear o
+  início automático. O volume individual fica salvo na sessão daquela aba.
+- A faixa é guardada no IndexedDB e enviada às outras abas pelo canal local da
+  mesa. Isso não sincroniza usuários em computadores ou navegadores diferentes;
+  esse alcance exige um servidor de sessão e um serviço para compartilhar o
+  arquivo de áudio.
+
+
+9. PERSISTÊNCIA E SINCRONIZAÇÃO
+-------------------------------
+- `sessionStorage`: sessão de nome/papel, identificação da aba, referência à
+  ficha PDF e volume local usado naquela aba.
+- `localStorage`: tokens e status, chat recente, notas, iniciativa, fila e mapa
+  ativo, escala da imagem, unidade ft/m, configurações de dados, desenhos,
+  elementos do cenário, largura do painel, permissão para desenho, metadados da
+  música compartilhada e o último comando de reprodução.
+- IndexedDB: arquivos de imagem de token, imagens de mapa, PDFs e faixa de áudio
+  compartilhada entre abas da mesma origem.
+- BroadcastChannel envia atualizações de tokens, movimentos, elementos do
+  cenário, chat/limpeza, fila/escala de mapas, ataques visuais, iniciativa, notas
+  e permissões para abas da mesma origem. A faixa e os controles de reprodução
+  também são compartilhados localmente entre essas abas.
+- A unidade de medida e a configuração de dados também observam mudanças no
+  localStorage entre abas. Imagens e PDFs usam o armazenamento local comum;
+  somente a faixa de áudio escolhida pelo Mestre é enviada pelo canal local.
+- Não há sincronização pela internet. Fechar/limpar dados do navegador pode
+  remover a sessão e os arquivos locais.
+
+
+10. CONTROLES VISUAIS AINDA SEM AÇÃO
+------------------------------------
+Os seguintes itens aparecem na interface, mas não têm fluxo funcional completo
+no código atual:
+- Navegação “Compêndio”.
+- Ícone de configurações no cabeçalho.
+- Botão “Névoa” do mapa.
+- Controles do Mestre “Revelar toda a névoa”, “Ocultar nomes de inimigos” e
+  “Permitir mover tokens”.
+- Botão “Adicionar participante” da iniciativa.
+- Código de sala, avatares adicionais e convite online são elementos de
+  apresentação; não criam sala nem enviam convite.
+
+
+11. LIMITES DO PRODUTO ATUAL
+----------------------------
+- Mestre/Jogador é um modo de interface, não um sistema de autenticação segura.
+- Os dados compartilhados alcançam somente abas do mesmo navegador e origem.
+- Não há backend, banco de dados, sala online, contas, convites remotos,
+  presença, voz/vídeo ou hospedagem compartilhada de arquivos.
+- Dados e recursos de demonstração podem aparecer na primeira execução.
+- Para jogar com pessoas em outros dispositivos, será necessário implementar
+  serviço remoto, autenticação, armazenamento e regras de autorização.
+
+
+12. ESTRUTURA TÉCNICA E COMANDOS
+--------------------------------
+- `src/App.tsx`: telas, estado e interações da aplicação.
+- `src/index.css`: tema, componentes, layout e responsividade.
+- `src/lib/tableChannel.ts`: eventos de sincronização via BroadcastChannel.
+- `src/lib/localAssets.ts`: armazenamento local de arquivos no IndexedDB.
+- `src/assets/neon-grid-map.jpg`: fundo local de demonstração.
+- `src/main.tsx`: ponto de montagem React.
+
+Stack: React 19, TypeScript 5.7, Vite 8 e Tailwind CSS 4.
+
+Comandos, a partir da pasta do projeto:
+- `pnpm install` instala as dependências.
+- `pnpm dev` inicia o servidor local de desenvolvimento.
+- `pnpm build` gera os arquivos de produção em `dist/`.
+- `pnpm preview` serve a build local para pré-visualização.
+- `pnpm format` formata os arquivos com oxfmt.
+
+
+FIM DA DOCUMENTAÇÃO
