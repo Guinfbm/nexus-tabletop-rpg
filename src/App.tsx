@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createTableChannel, type TableChannel, type TableEvent } from "./lib/tableChannel";
 import { getLocalAsset, removeLocalAsset, saveLocalAsset } from "./lib/localAssets";
 
@@ -204,7 +204,10 @@ type DicePoolRoll = {
   criticalSuccess: boolean;
   criticalFailure: boolean;
 };
-type MapQueuePayload = { scenes: MapScene[]; activeMapId: string | null };
+type TableRole = "gm" | "player";
+type SavedTableSession = { name: string; role: TableRole };
+type MapQueuePayload = { scenes: MapScene[]; activeMapId: string | null; imageScale?: number };
+type TokenContextMenu = { x: number; y: number; targetId: number };
 type AttackEffect = {
   id: string;
   startX: number;
@@ -394,6 +397,32 @@ function normalizeMapScenes(value: unknown): MapScene[] {
   );
 }
 
+function readSavedTableSession(): SavedTableSession | null {
+  try {
+    const saved = JSON.parse(sessionStorage.getItem("nexus-table-session") || "null") as Partial<SavedTableSession> | null;
+    if (!saved || typeof saved.name !== "string" || !saved.name.trim()) return null;
+    if (saved.role !== "gm" && saved.role !== "player") return null;
+    return { name: saved.name.trim(), role: saved.role };
+  } catch {
+    return null;
+  }
+}
+
+function saveTableSession(name: string, role: TableRole) {
+  try {
+    sessionStorage.setItem("nexus-table-session", JSON.stringify({ name, role } satisfies SavedTableSession));
+    sessionStorage.setItem("nexus-table-player-name", name);
+  } catch {
+    // A sessão continua válida na memória mesmo se o navegador bloquear storage.
+  }
+}
+
+function normalizeMapImageScale(value: unknown): number {
+  if (value === null || value === undefined || value === "") return 100;
+  const scale = Number(value);
+  return Number.isFinite(scale) ? Math.max(40, Math.min(200, scale)) : 100;
+}
+
 function sizePixels(size?: Token["size"], sizePx?: number): number {
   if (Number.isFinite(sizePx)) return Math.max(24, Math.min(96, Math.round(sizePx!)));
   return size === "small" ? 32 : size === "large" ? 58 : 42;
@@ -482,8 +511,19 @@ const initialMessages: Message[] = [
 ];
 
 function App() {
+  const [savedSession] = useState(() => readSavedTableSession());
+  const [hasEnteredSession, setHasEnteredSession] = useState(savedSession !== null);
+  const [loginName, setLoginName] = useState(() => {
+    if (savedSession) return savedSession.name;
+    try {
+      return sessionStorage.getItem("nexus-table-player-name") || "";
+    } catch {
+      return "";
+    }
+  });
+  const [loginRole, setLoginRole] = useState<TableRole>(savedSession?.role ?? "gm");
   const [tab, setTab] = useState<Tab>("map");
-  const [currentRole, setCurrentRole] = useState<"gm" | "player">("gm");
+  const [currentRole, setCurrentRole] = useState<TableRole>(savedSession?.role ?? "gm");
   const [rightPanel, setRightPanel] = useState<"chat" | "dice" | "sheet" | "music">("chat");
   const [sidePanelWidth, setSidePanelWidth] = useState(() => {
     const saved = Number(localStorage.getItem("nexus-table-panel-width"));
@@ -491,6 +531,9 @@ function App() {
   });
   const [sidePanelExpanded, setSidePanelExpanded] = useState(false);
   const [mapZoom, setMapZoom] = useState(1);
+  const [mapImageScale, setMapImageScale] = useState(() =>
+    normalizeMapImageScale(localStorage.getItem("nexus-table-map-image-scale")),
+  );
   const [mapPan, setMapPan] = useState({ x: 0, y: 0 });
   const [panActive, setPanActive] = useState(false);
   const [isPanning, setIsPanning] = useState(false);
@@ -531,6 +574,7 @@ function App() {
   const [selectedTokenId, setSelectedTokenId] = useState<number | null>(null);
   const [attackEffect, setAttackEffect] = useState<AttackEffect | null>(null);
   const [attackHint, setAttackHint] = useState("");
+  const [tokenContextMenu, setTokenContextMenu] = useState<TokenContextMenu | null>(null);
   const [showAllBars, setShowAllBars] = useState(false);
   const [rulerActive, setRulerActive] = useState(false);
   const [measurement, setMeasurement] = useState<Measurement | null>(null);
@@ -653,10 +697,11 @@ function App() {
   const suppressSharedEffectRef = useRef({ notes: false, initiative: false, drawingPermission: false });
   const [syncAvailable, setSyncAvailable] = useState(typeof BroadcastChannel !== "undefined");
   const [playerName, setPlayerName] = useState(() => {
+    if (savedSession) return savedSession.name;
     try {
-      return sessionStorage.getItem("nexus-table-player-name") || "Mestre Orion";
+      return "";
     } catch {
-      return "Mestre Orion";
+      return "";
     }
   });
   const [tabStorageId] = useState(() => {
@@ -709,7 +754,45 @@ function App() {
       ? nextActiveMapId
       : nextScenes[0]?.id ?? null;
     setActiveMapId(active);
-    if (broadcast) publish("map.queue", { scenes: nextScenes, activeMapId: active } satisfies MapQueuePayload);
+    if (broadcast) publish("map.queue", {
+      scenes: nextScenes,
+      activeMapId: active,
+      imageScale: mapImageScale,
+    } satisfies MapQueuePayload);
+  };
+  const startSession = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const name = loginName.trim();
+    if (!name) return;
+    setPlayerName(name);
+    setCurrentRole(loginRole);
+    saveTableSession(name, loginRole);
+    setHasEnteredSession(true);
+  };
+  const endSession = () => {
+    setLoginName(playerName);
+    setLoginRole(currentRole);
+    setHasEnteredSession(false);
+    try {
+      sessionStorage.removeItem("nexus-table-session");
+    } catch {
+      // A saída da sessão continua funcionando na interface.
+    }
+  };
+  const changeMapImageScale = (value: number) => {
+    if (currentRole !== "gm") return;
+    const scale = normalizeMapImageScale(value);
+    setMapImageScale(scale);
+    try {
+      localStorage.setItem("nexus-table-map-image-scale", String(scale));
+    } catch {
+      // A escala continua aplicada nesta aba mesmo se storage estiver indisponível.
+    }
+    publish("map.queue", {
+      scenes: mapScenesRef.current,
+      activeMapId,
+      imageScale: scale,
+    } satisfies MapQueuePayload);
   };
   const addMessage = (nextMessage: Message, broadcast = true) => {
     if (seenMessageIdsRef.current.has(nextMessage.id)) return;
@@ -902,6 +985,15 @@ function App() {
         seenMessageIdsRef.current.clear();
       } else if (event.type === "map.queue") {
         const queue = event.payload as MapQueuePayload;
+        if (typeof queue.imageScale === "number") {
+          const imageScale = normalizeMapImageScale(queue.imageScale);
+          setMapImageScale(imageScale);
+          try {
+            localStorage.setItem("nexus-table-map-image-scale", String(imageScale));
+          } catch {
+            // A alteração recebida continua aplicada nesta aba.
+          }
+        }
         persistMapQueue(normalizeMapScenes(queue.scenes), queue.activeMapId, false);
       } else if (event.type === "map.attack") {
         presentAttack(event.payload as AttackEffect);
@@ -1663,6 +1755,51 @@ function App() {
     if (audioRef.current) audioRef.current.volume = audioVolume / 100;
   }, [audioVolume, audioUrl]);
 
+  if (!hasEnteredSession) {
+    return (
+      <main className="login-screen">
+        <div className="login-backdrop" aria-hidden="true" />
+        <header className="login-brand">
+          <span className="brand-mark">N</span>
+          <span>NEXUS<span>//</span>TABLE</span>
+        </header>
+        <section className="login-card" aria-labelledby="login-title">
+          <span className="eyebrow">ACESSO À MESA LOCAL</span>
+          <h1 id="login-title">Entre na sessão</h1>
+          <p>Informe seu nome e escolha como vai participar da mesa.</p>
+          <form onSubmit={startSession}>
+            <label>
+              Nome do jogador ou mestre
+              <input
+                autoFocus
+                autoComplete="name"
+                maxLength={32}
+                required
+                value={loginName}
+                onChange={(event) => setLoginName(event.target.value)}
+                placeholder="Ex.: Mestre Orion"
+              />
+            </label>
+            <label>
+              Papel na sessão
+              <select value={loginRole} onChange={(event) => setLoginRole(event.target.value as TableRole)}>
+                <option value="gm">Mestre</option>
+                <option value="player">Jogador</option>
+              </select>
+            </label>
+            <button className="login-submit" type="submit" disabled={!loginName.trim()}>
+              Entrar na sessão <Icon name="users" size={16} />
+            </button>
+          </form>
+          <small className="login-storage-note">
+            Esta entrada é local e temporária. Nome e papel ficam salvos nesta aba do navegador.
+          </small>
+        </section>
+        <footer className="login-footer"><i /> SESSÃO NEXUS // TABLE · ARMAZENAMENTO LOCAL</footer>
+      </main>
+    );
+  }
+
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -1701,6 +1838,8 @@ function App() {
             onClick={() => {
               const nextRole = currentRole === "gm" ? "player" : "gm";
               setCurrentRole(nextRole);
+              setLoginRole(nextRole);
+              saveTableSession(playerName, nextRole);
               setDrawingActive(false);
               if (nextRole === "player") {
                 setTab("map");
@@ -1713,6 +1852,9 @@ function App() {
           >
             <Icon name={currentRole === "gm" ? "shield" : "users"} size={15} />
             <span>{currentRole === "gm" ? "Mestre" : "Jogador"}</span>
+          </button>
+          <button className="session-exit" onClick={endSession} title="Sair e trocar de usuário">
+            <Icon name="close" size={14} /> <span>Sair</span>
           </button>
           <button className="icon-btn" aria-label="Configurações">
             <Icon name="settings" />
@@ -1771,13 +1913,29 @@ function App() {
                       ? "Sincronização entre abas deste navegador"
                       : "BroadcastChannel indisponível — esta aba continua funcionando"}
                   </small>
-                    <label className="map-unit-control">
-                      Unidade
-                      <select value={mapUnit} onChange={(event) => setMapUnit(event.target.value as "ft" | "m")}>
-                        <option value="ft">Pés (ft)</option>
-                        <option value="m">Metros (m)</option>
-                      </select>
-                    </label>
+                    <div className="map-display-controls">
+                      <label className="map-unit-control">
+                        Unidade
+                        <select value={mapUnit} onChange={(event) => setMapUnit(event.target.value as "ft" | "m")}>
+                          <option value="ft">Pés (ft)</option>
+                          <option value="m">Metros (m)</option>
+                        </select>
+                      </label>
+                      {currentRole === "gm" && (
+                        <label className="map-image-scale">
+                          <span>Escala do mapa <b>{mapImageScale}%</b></span>
+                          <input
+                            type="range"
+                            min="40"
+                            max="200"
+                            step="1"
+                            value={mapImageScale}
+                            aria-label="Tamanho proporcional da imagem do mapa"
+                            onChange={(event) => changeMapImageScale(Number(event.target.value))}
+                          />
+                        </label>
+                      )}
+                    </div>
                 </div>
                 <div className="map-actions">
                   <button onClick={addToken}>
@@ -1880,12 +2038,13 @@ function App() {
                 tabIndex={0}
                 style={{
                   "--map-background": activeMapUrl ? `url("${activeMapUrl}")` : undefined,
-                  backgroundSize: `${48 * mapZoom}px ${48 * mapZoom}px, ${48 * mapZoom}px ${48 * mapZoom}px, ${100 * mapZoom}% ${100 * mapZoom}%`,
+                  backgroundSize: `${48 * mapZoom}px ${48 * mapZoom}px, ${48 * mapZoom}px ${48 * mapZoom}px, auto ${mapImageScale * mapZoom}%`,
                   backgroundPosition: `calc(50% + ${mapPan.x}px) calc(50% + ${mapPan.y}px), calc(50% + ${mapPan.x}px) calc(50% + ${mapPan.y}px), calc(50% + ${mapPan.x}px) calc(50% + ${mapPan.y}px)`,
                 } as React.CSSProperties}
                 onPointerDown={(e) => {
                   if (e.button !== 0) return;
                   const target = e.target as HTMLElement;
+                  setTokenContextMenu(null);
                   if (panActive) {
                     e.currentTarget.setPointerCapture(e.pointerId);
                     mapPanDragRef.current = {
@@ -2029,31 +2188,20 @@ function App() {
                         setSelectedTokenId(token.id);
                         setSelectedSceneElementId(null);
                         setAttackHint(canEditToken(token)
-                          ? "Botão direito em outro token para atacar."
+                          ? "Botão direito no alvo e escolha Atacar no menu."
                           : "Token bloqueado: selecione um token que você controla para atacar.");
                       }}
                       onContextMenu={(event) => {
                         event.preventDefault();
                         event.stopPropagation();
                         if (rulerActive || drawingActive || sceneEditMode || panActive) return;
-                        const attacker = selectedTokenId === null
-                          ? undefined
-                          : tokensRef.current.find((item) => item.id === selectedTokenId);
-                        if (!attacker || attacker.id === token.id) {
-                          if (!canEditToken(token)) {
-                            setAttackHint("Para atacar, selecione primeiro um token que você controla.");
-                            return;
-                          }
-                          setSelectedTokenId(token.id);
-                          setSelectedSceneElementId(null);
-                          setAttackHint(`Atacante: ${token.name}. Agora use o botão direito no alvo.`);
-                          return;
-                        }
-                        if (currentRole !== "gm" && !canEditToken(attacker)) {
-                          setAttackHint("Você só pode atacar com um token próprio ou atribuído pelo Mestre.");
-                          return;
-                        }
-                        fireTokenAttack(attacker, token);
+                        const bounds = mapRef.current?.getBoundingClientRect();
+                        if (!bounds) return;
+                        setTokenContextMenu({
+                          targetId: token.id,
+                          x: Math.max(8, Math.min(bounds.width - 208, event.clientX - bounds.left)),
+                          y: Math.max(8, Math.min(bounds.height - 96, event.clientY - bounds.top)),
+                        });
                       }}
                       className={`map-token ${token.enemy ? "enemy" : ""} shape-${token.shape || "circle"} size-${token.size || "medium"} border-${token.borderStyle || "none"} ${canEditToken(token) ? "" : "locked"}`}
                       aria-label={`${token.name}, ${canEditToken(token) ? "arrastável" : `bloqueado; proprietário: ${token.owner || "nenhum"}`}`}
@@ -2065,7 +2213,6 @@ function App() {
                         <span>{token.initials}</span>
                       )}
                       {token.showName !== false && <small>{token.name}</small>}
-                      {!canEditToken(token) && <span className="token-lock-badge" aria-hidden="true">🔒</span>}
                       {(showAllBars || selectedTokenId === token.id) && (
                         <div className="token-bars">
                           {token.bars
@@ -2144,6 +2291,58 @@ function App() {
                   </svg>
                 )}
                 </div>
+                {tokenContextMenu && (() => {
+                  const target = tokens.find((item) => item.id === tokenContextMenu.targetId);
+                  if (!target) return null;
+                  const attacker = selectedTokenId === null
+                    ? undefined
+                    : tokens.find((item) => item.id === selectedTokenId);
+                  const canAttack = !!attacker &&
+                    attacker.id !== target.id &&
+                    (currentRole === "gm" || canEditToken(attacker));
+                  const canSetAttacker = canEditToken(target);
+                  return (
+                    <div
+                      className="token-context-menu"
+                      role="menu"
+                      style={{ left: tokenContextMenu.x, top: tokenContextMenu.y }}
+                      onPointerDown={(event) => event.stopPropagation()}
+                    >
+                      <small>ALVO · {target.name}</small>
+                      {canAttack && attacker ? (
+                        <button
+                          role="menuitem"
+                          onClick={() => {
+                            fireTokenAttack(attacker, target);
+                            setTokenContextMenu(null);
+                          }}
+                        >
+                          <Icon name="dice" size={14} /> Atacar com {attacker.name}
+                        </button>
+                      ) : (
+                        <button
+                          role="menuitem"
+                          disabled={!canSetAttacker}
+                          onClick={() => {
+                            if (!canSetAttacker) return;
+                            setSelectedTokenId(target.id);
+                            setSelectedSceneElementId(null);
+                            setAttackHint(`${target.name} selecionado como atacante. Abra o menu do token alvo e escolha Atacar.`);
+                            setTokenContextMenu(null);
+                          }}
+                        >
+                          <Icon name="shield" size={14} />
+                          {canSetAttacker ? `Usar ${target.name} como atacante` : "Selecione um atacante próprio"}
+                        </button>
+                      )}
+                      <button
+                        className="context-menu-cancel"
+                        role="menuitem"
+                        onClick={() => setTokenContextMenu(null)}
+                      >Cancelar</button>
+                    </div>
+                  );
+                })()}
                 {drawingActive && (
                   <div className="drawing-tools" onPointerDown={(e) => e.stopPropagation()}>
                     <span>DESENHO</span>
@@ -2787,6 +2986,8 @@ function App() {
                   maxLength={32}
                   onChange={(e) => {
                     setPlayerName(e.target.value);
+                    setLoginName(e.target.value);
+                    saveTableSession(e.target.value, currentRole);
                     try {
                       sessionStorage.setItem("nexus-table-player-name", e.target.value);
                     } catch {

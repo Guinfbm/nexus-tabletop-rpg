@@ -43,6 +43,145 @@
   min-height: 100vh;
   background: radial-gradient(circle at 45% -20%, #17233a 0, transparent 38%), var(--bg);
 }
+.login-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  align-items: center;
+  justify-items: center;
+  gap: 24px;
+  overflow: auto;
+  padding: 28px 20px 20px;
+  background: radial-gradient(ellipse at 50% 42%, #142136 0, #090d16 48%, #070910 100%);
+}
+.login-backdrop {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: .38;
+  background-image:
+    linear-gradient(#18e3d014 1px, transparent 1px),
+    linear-gradient(90deg, #18e3d014 1px, transparent 1px),
+    radial-gradient(ellipse at 50% 50%, transparent 20%, #05070dbb 100%);
+  background-size: 42px 42px, 42px 42px, cover;
+  mask-image: linear-gradient(to bottom, transparent, #000 22%, #000 80%, transparent);
+}
+.login-brand,
+.login-card,
+.login-footer {
+  position: relative;
+  z-index: 1;
+}
+.login-brand {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  justify-self: start;
+  width: min(100%, 960px);
+  color: #e8edf7;
+  font: 700 13px "Space Mono";
+  letter-spacing: -.3px;
+}
+.login-brand > span:last-child > span {
+  color: var(--cyan);
+}
+.login-card {
+  width: min(100%, 420px);
+  padding: 32px;
+  border: 1px solid #18e3d04a;
+  border-radius: 8px;
+  background: linear-gradient(145deg, #121a29f5, #0b101af5);
+  box-shadow: 0 24px 80px #0009, 0 0 42px #18e3d00c, inset 0 1px #ffffff0a;
+}
+.login-card h1 {
+  margin: 9px 0 7px;
+  font-size: 25px;
+  letter-spacing: -.8px;
+}
+.login-card > p {
+  margin: 0 0 25px;
+  color: #8792a8;
+  font-size: 12px;
+  line-height: 1.55;
+}
+.login-card form {
+  display: grid;
+  gap: 17px;
+}
+.login-card form label {
+  display: grid;
+  gap: 7px;
+  color: #aab5c7;
+  font: 8px "Space Mono";
+  letter-spacing: .4px;
+  text-transform: uppercase;
+}
+.login-card input,
+.login-card select {
+  width: 100%;
+  height: 42px;
+  padding: 0 11px;
+  border: 1px solid #303a4e;
+  border-radius: 4px;
+  outline: 0;
+  background: #090e17;
+  color: #e7edf7;
+  font: 12px "DM Sans";
+  text-transform: none;
+  transition: border-color .15s, box-shadow .15s;
+}
+.login-card input:focus,
+.login-card select:focus {
+  border-color: #18e3d0aa;
+  box-shadow: 0 0 0 3px #18e3d01b;
+}
+.login-card input::placeholder {
+  color: #566176;
+}
+.login-submit {
+  min-height: 43px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  margin-top: 3px;
+  border: 1px solid #18e3d0;
+  border-radius: 4px;
+  background: linear-gradient(100deg, #18e3d0, #51f2da);
+  color: #071311;
+  font-size: 11px;
+  font-weight: 700;
+  box-shadow: 0 0 24px #18e3d02a;
+}
+.login-submit:disabled {
+  cursor: not-allowed;
+  opacity: .45;
+}
+.login-storage-note {
+  display: block;
+  margin-top: 19px;
+  color: #69758b;
+  font-size: 9px;
+  line-height: 1.5;
+  text-align: center;
+}
+.login-footer {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #647087;
+  font: 7px "Space Mono";
+  letter-spacing: .8px;
+}
+.login-footer i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #5effa6;
+  box-shadow: 0 0 8px #5effa6;
+}
 .topbar {
   height: 72px;
   border-bottom: 1px solid var(--line);
@@ -167,6 +306,19 @@
   border-color: #8f72ff66;
   color: #ae9cff;
   background: #8f72ff10;
+}
+.session-exit {
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 0 8px;
+  border: 1px solid #3b3340;
+  border-radius: 5px;
+  background: #17131a;
+  color: #c28b94;
+  font-size: 8px;
 }
 .icon-btn,
 .mobile-menu {
@@ -2147,6 +2299,13 @@
     padding: 0;
     justify-content: center;
   }
+  .session-exit {
+    width: 34px;
+    padding: 0;
+  }
+  .session-exit span {
+    display: none;
+  }
   .workspace {
     height: calc(100vh - 62px);
     grid-template-columns: 1fr;
@@ -2394,6 +2553,51 @@ body.resizing-side-panel * {
 .token-name-quick-toggle:disabled {
   cursor: not-allowed;
   opacity: .48;
+}
+.token-context-menu {
+  position: absolute;
+  z-index: 24;
+  width: 200px;
+  display: grid;
+  gap: 5px;
+  padding: 8px;
+  border: 1px solid #ff526777;
+  border-radius: 5px;
+  background: #0c111bf5;
+  box-shadow: 0 12px 36px #000c, 0 0 18px #ff183b16;
+  backdrop-filter: blur(10px);
+}
+.token-context-menu > small {
+  overflow: hidden;
+  padding: 1px 3px 4px;
+  color: #ff8796;
+  font: 7px "Space Mono";
+  letter-spacing: .8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.token-context-menu > button {
+  min-height: 29px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 7px;
+  border: 1px solid #3b2935;
+  border-radius: 3px;
+  background: #1b111a;
+  color: #ffc0c9;
+  text-align: left;
+  font-size: 9px;
+}
+.token-context-menu > button:disabled {
+  cursor: not-allowed;
+  opacity: .5;
+}
+.token-context-menu > button.context-menu-cancel {
+  justify-content: center;
+  border-color: #30384a;
+  background: #101620;
+  color: #8792a8;
 }
 .attack-hint {
   margin: 5px 0 8px;
@@ -2702,21 +2906,6 @@ body.resizing-side-panel * {
 .status-label > span {
   color: #d4dcec;
 }
-.token-lock-badge {
-  position: absolute;
-  top: -7px;
-  right: -8px;
-  z-index: 3;
-  width: 17px;
-  height: 17px;
-  display: grid;
-  place-items: center;
-  border: 1px solid #39465b;
-  border-radius: 50%;
-  background: #0a0e17;
-  font: 9px sans-serif !important;
-  pointer-events: none;
-}
 .map-token.locked {
   cursor: not-allowed;
 }
@@ -2763,8 +2952,34 @@ body.resizing-side-panel * {
 .map-toolbar .map-actions {
   flex: 0 1 auto;
 }
+.map-display-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin-top: 4px;
+}
 .map-unit-control {
   flex-wrap: wrap;
+}
+.map-image-scale {
+  width: min(170px, 42vw);
+  display: grid;
+  gap: 3px;
+  color: #9aa6bb;
+  font-size: 8px;
+}
+.map-image-scale > span {
+  display: flex;
+  justify-content: space-between;
+}
+.map-image-scale b {
+  color: var(--cyan);
+  font: 8px "Space Mono";
+}
+.map-image-scale input {
+  width: 100%;
+  accent-color: var(--cyan);
 }
 .side-pdf iframe {
   overflow: auto;
@@ -3087,6 +3302,13 @@ body.resizing-side-panel * {
   .map-toolbar > div:first-child {
     min-width: 0;
     flex: 1;
+  }
+  .map-display-controls {
+    align-items: flex-start;
+    gap: 7px 10px;
+  }
+  .map-image-scale {
+    width: min(150px, 44vw);
   }
   .map-toolbar h1 {
     overflow: hidden;

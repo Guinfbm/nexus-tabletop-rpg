@@ -5,7 +5,7 @@ Objetivo
 --------
 Consolidar os ajustes solicitados para o painel de ficha, gerenciamento de
 tokens, mapas/cenas, medição, rolagem de dados e chat. Este arquivo registra os
-requisitos e critérios de aceite; as funcionalidades das seções 8 a 10 foram
+requisitos e critérios de aceite; as funcionalidades das seções 8 a 11 foram
 implementadas em `src/App.tsx`, `src/index.css` e nos módulos de persistência e
 sincronização em `src/lib/`.
 
@@ -209,6 +209,9 @@ sincronização em `src/lib/`.
   opção para carregar várias imagens de uma vez.
 - Exibir o mapa ativo como fundo do grid da mesa e trocar esse fundo ao selecionar
   outro item da fila.
+- Disponibilizar ao Mestre um controle de escala para redimensionar a imagem do
+  mapa no grid, sempre preservando o aspect ratio original (sem esticar largura
+  e altura de forma independente).
 - Permitir pan por arraste e manter zoom acessível pelos controles existentes.
   O grid, a imagem e os elementos do mapa devem se mover juntos; posições de
   tokens e medições precisam continuar alinhadas após pan e zoom.
@@ -265,11 +268,10 @@ sincronização em `src/lib/`.
 - Manter no painel de status a edição direta do valor atual e do máximo de cada
   barra, permitindo apagar o conteúdo durante a digitação e confirmar o valor
   ao sair do campo ou pressionar Enter.
-- Implementar ataque visual: selecionar o token atacante com o botão esquerdo e
-  clicar com o botão direito em outro token para exibir um feixe/tiro vermelho
-  que percorre a distância entre os dois e um efeito breve de impacto no alvo.
-  Se nenhum atacante estiver selecionado, o primeiro clique direito em token
-  controlado seleciona o atacante e informa como escolher o alvo.
+- Implementar ataque visual por menu de contexto: clicar com o botão direito em
+  um token e selecionar “Usar como atacante”; depois, clicar com o botão direito
+  no alvo e escolher “Atacar com [token]”. Exibir um feixe/tiro vermelho que
+  percorre a distância entre os dois e um efeito breve de impacto no alvo.
 - Respeitar permissões: jogadores só iniciam o efeito com token próprio ou cuja
   posse foi atribuída pelo Mestre; o Mestre pode usar qualquer token. O efeito
   não altera automaticamente vida, status ou regras de combate.
@@ -283,9 +285,38 @@ sincronização em `src/lib/`.
   sem borda e a configuração escolhida continua após recarregar.
 - O botão rápido de nome atualiza imediatamente a visibilidade do nome no mapa
   e reflete o mesmo valor do controle em Identidade do token.
-- O feixe vermelho parte da posição do atacante e termina no alvo; outro token
-  pode ser selecionado como alvo sem conceder permissão para editá-lo.
+- O menu contextual permite definir um atacante e escolher “Atacar”; o feixe
+  vermelho parte da posição desse atacante e termina no alvo. É possível atacar
+  um alvo sem conceder permissão para editá-lo.
 - Jogadores sem posse não conseguem usar um token bloqueado como atacante; o
   Mestre pode fazê-lo. Ataques são apenas efeitos visuais e não causam dano.
 - O efeito desaparece após a animação e a preferência por movimento reduzido
   evita a animação de deslocamento.
+
+
+11. TELA INICIAL DE ENTRADA
+---------------------------
+- Antes de abrir a mesa, mostrar uma tela leve no tema dark/neon com campo para
+  nome do jogador/Mestre e seletor de papel “Mestre” ou “Jogador”.
+- Validar que o nome não esteja vazio e oferecer o botão “Entrar na sessão”.
+- Guardar nome e papel em `sessionStorage`, sem exigir conta, servidor ou banco
+  de dados. Ao reabrir a mesma aba, restaurar a sessão ativa; oferecer uma ação
+  para sair e voltar à tela inicial para trocar de identidade.
+- Manter a entrada local como identificação de interface; não representar essa
+  escolha de papel como autenticação de segurança do servidor.
+
+11.1 AJUSTE PROPORCIONAL DA IMAGEM DO MAPA
+------------------------------------------
+- Oferecer ao Mestre um slider para ajustar o tamanho da imagem de fundo do mapa
+  sem alterar sua proporção original. A grade e a câmera devem continuar
+  alinhadas, e a imagem não pode ficar achatada ou esticada.
+- Persistir a escala localmente e sincronizá-la com as demais abas da mesa junto
+  com a cena ativa.
+
+11.2 CRITÉRIOS DE ACEITE
+-----------------------
+- Sem sessão salva, a tela de entrada aparece antes da interface da mesa. Um
+  nome válido e um papel selecionado abrem a mesa; recarregar a aba restaura a
+  sessão e usar “Sair” retorna à entrada.
+- A imagem de um mapa largo ou alto mantém sua proporção ao mover o slider; a
+  alteração de escala e a cena ativa são compartilhadas entre abas da mesa.
