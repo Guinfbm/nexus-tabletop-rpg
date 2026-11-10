@@ -187,6 +187,7 @@ type Token = {
   imageAssetId?: string;
   shape?: "circle" | "square" | "hex";
   size?: "small" | "medium" | "large";
+  sizePx?: number;
   hidden?: boolean;
 };
 type SceneElement = {
@@ -248,6 +249,28 @@ function rollCyberpunkRed(modifier: number, random = Math.random): CyberpunkRedR
   const safeModifier = Number.isFinite(modifier) ? Math.trunc(modifier) : 0;
   const total = natural + (extraDie ?? 0) * (critical === "failure" ? -1 : 1) + safeModifier;
   return { natural, modifier: safeModifier, extraDie, total, critical };
+}
+
+type DieRoll = CyberpunkRedRoll & { sides: number };
+
+function rollDie(sides: number, modifier: number, random = Math.random): DieRoll {
+  const safeSides = Math.max(1, Math.min(100, Math.trunc(Number.isFinite(sides) ? sides : 10)));
+  const safeModifier = Math.trunc(Number.isFinite(modifier) ? modifier : 0);
+  if (safeSides === 10) return { ...rollCyberpunkRed(safeModifier, random), sides: safeSides };
+  const sample = random();
+  const natural = Number.isFinite(sample)
+    ? Math.max(1, Math.min(safeSides, Math.floor(sample * safeSides) + 1))
+    : 1;
+  return { natural, modifier: safeModifier, total: natural + safeModifier, sides: safeSides };
+}
+
+function formatDistance(feet: number, unit: "ft" | "m"): string {
+  return unit === "ft" ? `${feet} ft` : `${Number((feet * 0.3048).toFixed(2))} m`;
+}
+
+function sizePixels(size?: Token["size"], sizePx?: number): number {
+  if (Number.isFinite(sizePx)) return Math.max(24, Math.min(96, Math.round(sizePx!)));
+  return size === "small" ? 32 : size === "large" ? 58 : 42;
 }
 
 function createStatusBars(health: number, vigor = 16, shield = 10): StatusBar[] {
@@ -354,6 +377,7 @@ function App() {
         bars: token.bars?.length ? token.bars : createStatusBars(token.hp || 20),
         shape: token.shape || (token.enemy ? "square" : "circle"),
         size: token.size || "medium",
+        sizePx: sizePixels(token.size, token.sizePx),
         owner:
           token.owner ||
           (token.name === "Nyx" || token.name === "Kade" || token.name === "Vex"
@@ -400,6 +424,7 @@ function App() {
       : current === "true";
   });
   const [newBarName, setNewBarName] = useState("");
+  const [maxDrafts, setMaxDrafts] = useState<Record<string, string>>({});
   const [messages, setMessages] = useState<Message[]>(() => {
     try {
       return JSON.parse(localStorage.getItem("nexus-table-messages") || "") as Message[];
@@ -409,6 +434,14 @@ function App() {
   });
   const [message, setMessage] = useState("");
   const [modifier, setModifier] = useState(0);
+  const [dieSides, setDieSides] = useState(() => {
+    const saved = Number(localStorage.getItem("nexus-table-die-sides"));
+    return Number.isInteger(saved) && saved >= 1 && saved <= 100 ? saved : 10;
+  });
+  const [isRolling, setIsRolling] = useState(false);
+  const [mapUnit, setMapUnit] = useState<"ft" | "m">(() =>
+    localStorage.getItem("nexus-table-map-unit") === "m" ? "m" : "ft",
+  );
   const [lastRoll, setLastRoll] = useState<number | null>(null);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [sideOpen, setSideOpen] = useState(false);
@@ -547,6 +580,22 @@ function App() {
     [sceneElements],
   );
   useEffect(() => localStorage.setItem("nexus-table-panel-width", String(sidePanelWidth)), [sidePanelWidth]);
+  useEffect(() => localStorage.setItem("nexus-table-die-sides", String(dieSides)), [dieSides]);
+  useEffect(() => localStorage.setItem("nexus-table-map-unit", mapUnit), [mapUnit]);
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === "nexus-table-map-unit" && (event.newValue === "ft" || event.newValue === "m")) {
+        setMapUnit((current) => current === event.newValue ? current : event.newValue as "ft" | "m");
+      } else if (event.key === "nexus-table-die-sides") {
+        const sides = Number(event.newValue);
+        if (Number.isInteger(sides) && sides >= 1 && sides <= 100) {
+          setDieSides((current) => current === sides ? current : sides);
+        }
+      }
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape" && sidePanelExpanded) {
@@ -773,15 +822,14 @@ function App() {
     setMessage("");
   }
 
-  function rollDice() {
-    const result = rollCyberpunkRed(modifier);
+  function publishRoll(result: DieRoll) {
     setLastRoll(result.total);
-    const extraText = result.extraDie === undefined
+    const extraOperation = result.extraDie === undefined
       ? ""
-      : ` • dado adicional ${result.critical === "failure" ? "−" : "+"}${result.extraDie}`;
-    const modifierText = result.modifier === 0
-      ? " • modificador 0"
-      : ` • modificador ${result.modifier > 0 ? "+" : ""}${result.modifier}`;
+      : ` ${result.critical === "failure" ? "−" : "+"} ${result.extraDie}`;
+    const modifierOperation = result.modifier < 0
+      ? ` − ${Math.abs(result.modifier)}`
+      : ` + ${result.modifier}`;
     const status = result.critical === "success"
       ? " • SUCESSO CRÍTICO"
       : result.critical === "failure"
@@ -790,12 +838,28 @@ function App() {
     addMessage({
       id: uniqueId(),
       author: playerName.trim() || "Jogador",
-      text: `Cyberpunk RED: natural ${result.natural}${extraText}${modifierText} • total ${result.total}${status}`,
+      text: `d${result.sides}: ${result.natural}${extraOperation}${modifierOperation} = ${result.total}${status}`,
       time: new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }),
       kind: "roll",
       critical: result.critical,
-      roll: result,
+      roll: { natural: result.natural, modifier: result.modifier, extraDie: result.extraDie, total: result.total },
     });
+  }
+
+  function rollDice() {
+    if (isRolling) return;
+    const result = rollDie(dieSides, modifier);
+    const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+    if (reduceMotion) {
+      publishRoll(result);
+      return;
+    }
+    setLastRoll(null);
+    setIsRolling(true);
+    window.setTimeout(() => {
+      publishRoll(result);
+      setIsRolling(false);
+    }, 700);
   }
 
   function mapPoint(clientX: number, clientY: number) {
@@ -1007,7 +1071,14 @@ function App() {
   function updateToken(tokenId: number, patch: Partial<Token>) {
     const next = tokensRef.current.map((token) =>
       token.id === tokenId
-        ? { ...token, ...patch, ...(patch.name !== undefined ? { initials: initialsFromName(patch.name) } : {}) }
+        ? {
+            ...token,
+            ...patch,
+            ...(patch.name !== undefined ? { initials: initialsFromName(patch.name) } : {}),
+            ...(patch.size !== undefined && patch.sizePx === undefined
+              ? { sizePx: sizePixels(patch.size, undefined) }
+              : {}),
+          }
         : token,
     );
     persistTokens(next);
@@ -1085,6 +1156,21 @@ function App() {
     if (!token) return;
     updateToken(tokenId, {
       bars: token.bars.map((bar) => (bar.id === barId ? { ...bar, ...patch } : bar)),
+    });
+  }
+
+  function commitBarMax(tokenId: number, barId: string, draft: string) {
+    const token = tokensRef.current.find((item) => item.id === tokenId);
+    const bar = token?.bars.find((item) => item.id === barId);
+    const nextMax = draft.trim() ? Number(draft) : Number.NaN;
+    if (bar && Number.isSafeInteger(nextMax) && nextMax > 0) {
+      updateBar(tokenId, barId, { max: nextMax, value: Math.min(bar.value, nextMax) });
+    }
+    const key = `${tokenId}:${barId}`;
+    setMaxDrafts((drafts) => {
+      const next = { ...drafts };
+      delete next[key];
+      return next;
     });
   }
 
@@ -1295,6 +1381,13 @@ function App() {
                       ? "Sincronização entre abas deste navegador"
                       : "BroadcastChannel indisponível — esta aba continua funcionando"}
                   </small>
+                    <label className="map-unit-control">
+                      Unidade
+                      <select value={mapUnit} onChange={(event) => setMapUnit(event.target.value as "ft" | "m")}>
+                        <option value="ft">Pés (ft)</option>
+                        <option value="m">Metros (m)</option>
+                      </select>
+                    </label>
                 </div>
                 <div className="map-actions">
                   <button onClick={addToken}>
@@ -1486,12 +1579,13 @@ function App() {
                   .map((token) => (
                     <button
                       key={token.id}
-                      className={`map-token ${token.enemy ? "enemy" : ""} shape-${token.shape || "circle"} size-${token.size || "medium"}`}
+                       className={`map-token ${token.enemy ? "enemy" : ""} shape-${token.shape || "circle"} size-${token.size || "medium"}`}
                       style={
                         {
                           left: `${dragVisual?.id === token.id ? dragVisual.x : token.x}%`,
                           top: `${dragVisual?.id === token.id ? dragVisual.y : token.y}%`,
                           "--token": token.color,
+                           "--token-size": `${sizePixels(token.size, token.sizePx)}px`,
                         } as React.CSSProperties
                       }
                       onPointerDown={(e) => {
@@ -1548,7 +1642,7 @@ function App() {
                   >
                     <span className="measure-start" />
                     <div className="measure-line" />
-                    <strong>{measurement.distance} ft</strong>
+                  <strong>{formatDistance(measurement.distance, mapUnit)}</strong>
                     <span className="measure-end" />
                   </div>
                 )}
@@ -1665,15 +1759,20 @@ function App() {
                                 <span>/</span>
                                 <input
                                   aria-label={`Valor máximo de ${bar.name}`}
-                                  type="number"
-                                  min="1"
-                                  value={bar.max}
-                                  onChange={(e) => {
-                                    const max = Math.max(1, Number(e.target.value));
-                                    updateBar(selected.id, bar.id, {
-                                      max,
-                                      value: Math.min(bar.value, max),
-                                    });
+                                  type="text"
+                                  inputMode="numeric"
+                                  value={maxDrafts[`${selected.id}:${bar.id}`] ?? String(bar.max)}
+                                  onFocus={() => setMaxDrafts((drafts) => ({
+                                    ...drafts,
+                                    [`${selected.id}:${bar.id}`]: String(bar.max),
+                                  }))}
+                                  onChange={(event) => setMaxDrafts((drafts) => ({
+                                    ...drafts,
+                                    [`${selected.id}:${bar.id}`]: event.target.value.replace(/[^0-9]/g, ""),
+                                  }))}
+                                  onBlur={(event) => commitBarMax(selected.id, bar.id, event.currentTarget.value)}
+                                  onKeyDown={(event) => {
+                                    if (event.key === "Enter") event.currentTarget.blur();
                                   }}
                                 />
                               </div>
@@ -1718,6 +1817,18 @@ function App() {
                                 />
                               </label>
                             </div>
+                            <label className="token-size-control">
+                              <span>Tamanho no mapa <b>{sizePixels(selected.size, selected.sizePx)} px</b></span>
+                              <input
+                                type="range"
+                                min="24"
+                                max="96"
+                                step="1"
+                                value={sizePixels(selected.size, selected.sizePx)}
+                                aria-label="Tamanho do token no mapa"
+                                onChange={(event) => updateToken(selected.id, { sizePx: Number(event.target.value) })}
+                              />
+                            </label>
                             <div className="customizer-row">
                               <label className="token-upload">
                                 <Icon name="upload" size={14} />
@@ -1778,6 +1889,7 @@ function App() {
                                   onChange={(e) =>
                                     updateToken(selected.id, {
                                       size: e.target.value as Token["size"],
+                                      sizePx: e.target.value === "small" ? 32 : e.target.value === "large" ? 58 : 42,
                                     })
                                   }
                                 >
@@ -1839,7 +1951,7 @@ function App() {
                       </div>
                     );
                   })()}
-                <div className="map-coordinate">GRID 5FT • X:042 Y:117</div>
+                <div className="map-coordinate">GRID {formatDistance(5, mapUnit).toUpperCase()} • X:042 Y:117</div>
               </div>
             </div>
           )}
@@ -2121,27 +2233,35 @@ function App() {
             </>
           ) : rightPanel === "dice" ? (
             <div className="dice-panel">
-              <div className={`dice-result ${lastRoll !== null ? "rolled" : ""}`}>
+              <div className={`dice-result ${lastRoll !== null ? "rolled" : ""} ${isRolling ? "rolling" : ""}`} aria-live="polite" aria-busy={isRolling}>
                 <Icon name="dice" size={28} />
                 <span>{lastRoll ?? "—"}</span>
-                <small>RESULTADO</small>
+                <small>{isRolling ? "ROLANDO" : `D${dieSides} • RESULTADO`}</small>
               </div>
-              <p className="red-die-label">CYBERPUNK RED • D10</p>
+              <p className="red-die-label">{dieSides === 10 ? "CYBERPUNK RED • D10" : `DADO PERSONALIZADO • D${dieSides}`}</p>
+              <label className="die-selector">
+                Tipo de dado
+                <select value={dieSides} disabled={isRolling} onChange={(event) => setDieSides(Number(event.target.value))}>
+                  {Array.from({ length: 100 }, (_, index) => index + 1).map((sides) => (
+                    <option key={sides} value={sides}>d{sides}</option>
+                  ))}
+                </select>
+              </label>
               <label>
                 Modificador
                 <div className="modifier">
-                  <button onClick={() => setModifier((m) => m - 1)}>−</button>
+                  <button disabled={isRolling} onClick={() => setModifier((m) => m - 1)}>−</button>
                   <b>
                     {modifier > 0 ? "+" : ""}
                     {modifier}
                   </b>
-                  <button onClick={() => setModifier((m) => m + 1)}>+</button>
+                  <button disabled={isRolling} onClick={() => setModifier((m) => m + 1)}>+</button>
                 </div>
               </label>
-              <button className="roll-btn" onClick={rollDice}>
-                <Icon name="dice" /> Rolar d10
+              <button className="roll-btn" onClick={rollDice} disabled={isRolling}>
+                <Icon name="dice" /> {isRolling ? `Rolando d${dieSides}…` : `Rolar d${dieSides}`}
               </button>
-              <small className="dice-hint">Resultados naturais 10 e 1 incluem um d10 adicional e são destacados no chat.</small>
+              <small className="dice-hint">{dieSides === 10 ? "No d10, resultados naturais 10 e 1 incluem um dado adicional e indicam críticos." : "A rolagem usa o número de faces selecionado e o modificador atual."}</small>
             </div>
           ) : rightPanel === "sheet" ? (
             <div className="side-sheet">

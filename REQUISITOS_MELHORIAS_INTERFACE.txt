@@ -1,0 +1,129 @@
+NEXUS // TABLE — REQUISITOS DE MELHORIAS DA INTERFACE
+====================================================
+
+Objetivo
+--------
+Consolidar os ajustes solicitados para o painel de ficha, gerenciamento de
+tokens, medição do mapa e rolagem de dados. Este arquivo descreve o resultado
+esperado e uma direção de implementação. As alterações foram aplicadas em
+`src/App.tsx` e `src/index.css`; este arquivo permanece como referência de
+escopo e critérios de aceite.
+
+
+1. PAINEL DA FICHA DE PERSONAGEM
+--------------------------------
+- Fazer o visualizador de PDF ocupar todo o espaço vertical disponível na aba
+  Ficha, sem cortes e sem altura fixa que impeça o redimensionamento.
+- Usar uma coluna flexível: painel e visualizador com `min-height: 0`; o
+  contêiner do PDF com `flex: 1`; e a área do iframe com `flex: 1`, `height:
+  100%` e rolagem própria quando necessária.
+- Manter o iframe com largura total do contêiner e altura total da área de
+  visualização.
+- Confirmar que a ficha continua ocupando a área disponível quando o painel
+  lateral é redimensionado ou maximizado.
+
+
+2. GERENCIAMENTO DE TOKENS
+--------------------------
+
+2.1 Barras de status
+- Remover o fundo indesejado e as bordas em volta das barras, deixando o trilho
+  transparente e sem sombra de contorno.
+- Preservar o preenchimento colorido que representa o valor atual da barra.
+- Aumentar contraste e legibilidade dos nomes, valores, controles e ícones sem
+  aumentar o ruído visual.
+
+2.2 Edição do valor máximo
+- Corrigir o campo de valor máximo/total que não permite apagar o primeiro
+  dígito durante a digitação.
+- Não forçar o valor mínimo a cada tecla. Manter um valor temporário de texto
+  enquanto o campo está em edição, permitindo inclusive que fique vazio.
+- Validar e normalizar o valor ao confirmar ou sair do campo: aceitar um
+  inteiro positivo, impedir máximo inválido e limitar o valor atual ao novo
+  máximo.
+- Permitir confirmação por Enter e manter o valor anterior se a entrada for
+  inválida.
+
+2.3 Tamanho dinâmico no mapa
+- Adicionar um controle deslizante à seção de identidade/configuração do token
+  para ajustar seu tamanho sem trocar entre opções fixas.
+- Exibir o tamanho atual de forma clara e oferecer limites mínimo e máximo.
+- Persistir o tamanho individual do token no armazenamento local e refletir o
+  ajuste imediatamente no mapa e nas outras abas da mesa no mesmo navegador.
+- Manter compatibilidade com tokens antigos que ainda usam os tamanhos
+  pequeno, médio e grande, convertendo-os para um valor inicial equivalente.
+
+
+3. UNIDADES DE MEDIDA DO MAPA
+-----------------------------
+- Oferecer uma configuração para alternar entre pés (ft) e metros (m).
+- Aplicar a mesma unidade à Régua e às indicações de distância do Grid.
+- Converter distâncias de forma consistente. A grade atual representa células
+  de 5 ft; mostrar o equivalente em metros quando essa unidade estiver ativa.
+- Atualizar o rótulo da régua e do grid imediatamente após a troca e persistir
+  a preferência localmente.
+- Não alterar a posição dos tokens nem a escala visual do mapa ao mudar apenas
+  a unidade exibida.
+
+
+4. SISTEMA DE ROLAGEM DE DADOS
+------------------------------
+
+4.1 Seletor de dados
+- Permitir selecionar qualquer dado de d1 a d100, inclusive d4, d6, d8, d10,
+  d12, d20 e d100.
+- Exibir o tipo selecionado perto do botão de rolagem.
+- Calcular cada dado inteiro entre 1 e o número de faces selecionado.
+- Manter a regra especial de crítico do Cyberpunk RED para o d10. Outros tipos
+  de dado usam a rolagem convencional, salvo regra específica definida depois.
+
+4.2 Animação
+- Mostrar uma animação visual de rolagem enquanto o resultado está sendo
+  calculado, usando a face/tipo selecionado na interface.
+- Desativar o botão durante a animação para impedir rolagens duplicadas.
+- Respeitar a preferência do sistema por movimento reduzido e apresentar o
+  resultado mesmo quando a animação estiver desativada.
+
+4.3 Formato do resultado
+- Exibir a conta no formato obrigatório:
+
+      [Valor do dado] + [Modificador] = [Total final]
+
+- Exemplo: `14 + 3 = 17`.
+- Para modificador negativo, mostrar a operação correspondente, por exemplo
+  `14 - 3 = 11`. Para modificador zero, mostrar `14 + 0 = 14`.
+- Em críticos do d10 de Cyberpunk RED, manter o resultado e a indicação de
+  sucesso/falha crítica em uma única mensagem do chat, preservando a conta de
+  forma legível.
+
+
+5. DIREÇÃO DE IMPLEMENTAÇÃO
+---------------------------
+- HTML/React: usar controles nativos acessíveis (`select`, `input type="range"`,
+  campos numéricos/texto e botões com rótulos claros).
+- CSS: usar flexbox com `min-height: 0` no painel da ficha; trilhos transparentes
+  nas barras; estilos responsivos para o slider, o seletor de dados e a
+  animação; e `prefers-reduced-motion` para movimento reduzido.
+- JavaScript/TypeScript: separar as funções de cálculo de dados e conversão de
+  unidades da renderização da interface; validar valores ao confirmar; persistir
+  preferências e tamanhos no armazenamento local; e sincronizar alterações
+  somente entre abas da mesma origem e navegador.
+- A sincronização descrita é local. Multiplayer entre computadores exige um
+  serviço remoto e não faz parte deste escopo.
+
+
+6. CRITÉRIOS DE ACEITE
+----------------------
+- O PDF preenche a altura disponível e permanece utilizável ao redimensionar
+  ou maximizar o painel.
+- As barras não exibem fundo ou borda indesejados; o preenchimento e os textos
+  continuam claros e legíveis.
+- O campo de máximo permite apagar todo o conteúdo e substituir o número; um
+  valor inválido não quebra a barra.
+- O slider altera o tamanho do token continuamente, persiste após recarregar e
+  funciona com tokens existentes.
+- Régua e grid mostram ft ou m de acordo com a configuração, com conversão
+  coerente para células de 5 ft.
+- O seletor oferece d1 a d100; a animação não duplica rolagens; e o resultado
+  segue o formato pedido, incluindo modificadores positivo, negativo e zero.
+- A regra crítica permanece específica ao d10 de Cyberpunk RED.
