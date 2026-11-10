@@ -24,7 +24,10 @@ type IconName =
   | "music"
   | "play"
   | "pause"
-  | "pencil";
+  | "pencil"
+  | "maximize"
+  | "minimize"
+  | "trash";
 
 function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
   const paths: Record<IconName, React.ReactNode> = {
@@ -133,6 +136,14 @@ function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
         <path d="m13.5 7 3.5 3.5M4 20l3-3" />
       </>
     ),
+    maximize: <path d="M8 3H5a2 2 0 0 0-2 2v3m13-5h3a2 2 0 0 1 2 2v3M3 16v3a2 2 0 0 0 2 2h3m13-5v3a2 2 0 0 1-2 2h-3" />,
+    minimize: <path d="M8 3v5H3m13-5v5h5M3 16h5v5m13-5h-5v5" />,
+    trash: (
+      <>
+        <path d="M3 6h18M8 6V4h8v2m3 0-1 14H6L5 6" />
+        <path d="M10 11v5m4-5v5" />
+      </>
+    ),
   };
   return (
     <svg
@@ -178,6 +189,15 @@ type Token = {
   size?: "small" | "medium" | "large";
   hidden?: boolean;
 };
+type SceneElement = {
+  id: string;
+  name: string;
+  kind: "marker" | "cover" | "hazard";
+  x: number;
+  y: number;
+  color: string;
+  size: "small" | "medium" | "large";
+};
 type Message = {
   id: string | number;
   author: string;
@@ -202,6 +222,32 @@ type Measurement = {
 
 function uniqueId(): string {
   return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function initialsFromName(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  return (parts.length > 1 ? `${parts[0][0]}${parts[1][0]}` : parts[0]?.slice(0, 2) || "?").toUpperCase();
+}
+
+type CyberpunkRedRoll = {
+  natural: number;
+  modifier: number;
+  extraDie?: number;
+  total: number;
+  critical?: "success" | "failure";
+};
+
+function rollCyberpunkRed(modifier: number, random = Math.random): CyberpunkRedRoll {
+  const rollD10 = () => {
+    const sample = random();
+    return Number.isFinite(sample) ? Math.max(1, Math.min(10, Math.floor(sample * 10) + 1)) : 1;
+  };
+  const natural = rollD10();
+  const critical = natural === 10 ? "success" : natural === 1 ? "failure" : undefined;
+  const extraDie = critical ? rollD10() : undefined;
+  const safeModifier = Number.isFinite(modifier) ? Math.trunc(modifier) : 0;
+  const total = natural + (extraDie ?? 0) * (critical === "failure" ? -1 : 1) + safeModifier;
+  return { natural, modifier: safeModifier, extraDie, total, critical };
 }
 
 function createStatusBars(health: number, vigor = 16, shield = 10): StatusBar[] {
@@ -290,6 +336,13 @@ function App() {
   const [tab, setTab] = useState<Tab>("map");
   const [currentRole, setCurrentRole] = useState<"gm" | "player">("gm");
   const [rightPanel, setRightPanel] = useState<"chat" | "dice" | "sheet" | "music">("chat");
+  const [sidePanelWidth, setSidePanelWidth] = useState(() => {
+    const saved = Number(localStorage.getItem("nexus-table-panel-width"));
+    return Number.isFinite(saved) && saved >= 280 && saved <= 560 ? saved : 328;
+  });
+  const [sidePanelExpanded, setSidePanelExpanded] = useState(false);
+  const [mapZoom, setMapZoom] = useState(1);
+  const [pdfZoom, setPdfZoom] = useState(1);
   const [tokens, setTokens] = useState<Token[]>(() => {
     try {
       const saved = JSON.parse(
@@ -329,6 +382,17 @@ function App() {
       return [];
     }
   });
+  const [sceneElements, setSceneElements] = useState<SceneElement[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem("nexus-table-scene-elements") || "[]") as SceneElement[];
+    } catch {
+      return [];
+    }
+  });
+  const [sceneEditMode, setSceneEditMode] = useState(false);
+  const [scenePlacementKind, setScenePlacementKind] = useState<SceneElement["kind"] | null>(null);
+  const [selectedSceneElementId, setSelectedSceneElementId] = useState<string | null>(null);
+  const [sceneDragVisual, setSceneDragVisual] = useState<{ id: string; x: number; y: number } | null>(null);
   const [playersCanDraw, setPlayersCanDraw] = useState(() => {
     const current = localStorage.getItem("nexus-table-player-drawing");
     return current === null
@@ -383,6 +447,11 @@ function App() {
   const dragRef = useRef<number | null>(null);
   const dragPositionRef = useRef<{ x: number; y: number } | null>(null);
   const dragStartPositionRef = useRef<{ x: number; y: number } | null>(null);
+  const sceneElementsRef = useRef(sceneElements);
+  const sceneDragRef = useRef<string | null>(null);
+  const sceneDragPositionRef = useRef<{ x: number; y: number } | null>(null);
+  const sceneDragStartRef = useRef<{ x: number; y: number } | null>(null);
+  const resizingPanelRef = useRef(false);
   const audioRef = useRef<HTMLAudioElement>(null);
   const channelRef = useRef<TableChannel | null>(null);
   const tokensRef = useRef(tokens);
@@ -429,6 +498,10 @@ function App() {
     tokensRef.current = next;
     setTokens(next);
   };
+  const persistSceneElements = (next: SceneElement[]) => {
+    sceneElementsRef.current = next;
+    setSceneElements(next);
+  };
   const publish = <T,>(type: TableEvent["type"], payload: T) => channelRef.current?.publish(type, payload);
   const addMessage = (nextMessage: Message, broadcast = true) => {
     if (seenMessageIdsRef.current.has(nextMessage.id)) return;
@@ -470,6 +543,46 @@ function App() {
   }, [initiative]);
   useEffect(() => localStorage.setItem("nexus-table-drawings", JSON.stringify(strokes)), [strokes]);
   useEffect(
+    () => localStorage.setItem("nexus-table-scene-elements", JSON.stringify(sceneElements)),
+    [sceneElements],
+  );
+  useEffect(() => localStorage.setItem("nexus-table-panel-width", String(sidePanelWidth)), [sidePanelWidth]);
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && sidePanelExpanded) {
+        setSidePanelExpanded(false);
+        return;
+      }
+      if (!event.ctrlKey || tab !== "map" || !mapRef.current?.contains(document.activeElement)) return;
+      const target = event.target;
+      if (target instanceof HTMLElement && target.closest("input, textarea, select, [contenteditable='true']")) return;
+      if (event.key === "+" || event.key === "=") {
+        event.preventDefault();
+        changeMapZoom(0.1);
+      } else if (event.key === "-" || event.key === "_") {
+        event.preventDefault();
+        changeMapZoom(-0.1);
+      }
+    };
+    const onWheel = (event: WheelEvent) => {
+      if (!event.ctrlKey || !mapRef.current?.contains(event.target as Node)) return;
+      event.preventDefault();
+      changeMapZoom(event.deltaY < 0 ? 0.1 : -0.1);
+    };
+    const onPointerMove = (event: PointerEvent) => handlePanelResize(event.clientX);
+    const onPointerUp = () => finishPanelResize();
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("wheel", onWheel, { passive: false });
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("wheel", onWheel);
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+    };
+  }, [tab, sidePanelExpanded]);
+  useEffect(
     () => {
       playersCanDrawRef.current = playersCanDraw;
       localStorage.setItem("nexus-table-player-drawing", String(playersCanDraw));
@@ -510,6 +623,31 @@ function App() {
         );
         tokensRef.current = next;
         setTokens(next);
+      } else if (event.type === "token.delete") {
+        const payload = event.payload as { id: number };
+        const deleted = tokensRef.current.find((item) => item.id === payload.id);
+        if (deleted?.imageAssetId) {
+          void removeLocalAsset(deleted.imageAssetId).catch(() => undefined);
+          setAssetUrls((current) => {
+            const next = { ...current };
+            const url = next[deleted.imageAssetId!];
+            if (url) releaseObjectUrl(url);
+            delete next[deleted.imageAssetId!];
+            return next;
+          });
+        }
+        persistTokens(tokensRef.current.filter((item) => item.id !== payload.id));
+        setSelectedTokenId((selected) => (selected === payload.id ? null : selected));
+      } else if (event.type === "scene.upsert") {
+        const element = event.payload as SceneElement;
+        const next = sceneElementsRef.current.some((item) => item.id === element.id)
+          ? sceneElementsRef.current.map((item) => (item.id === element.id ? element : item))
+          : [...sceneElementsRef.current, element];
+        persistSceneElements(next);
+      } else if (event.type === "scene.delete") {
+        const payload = event.payload as { id: string };
+        persistSceneElements(sceneElementsRef.current.filter((item) => item.id !== payload.id));
+        setSelectedSceneElementId((selected) => (selected === payload.id ? null : selected));
       } else if (event.type === "chat.message") {
         const incoming = event.payload as Message;
         addMessage(incoming, false);
@@ -576,6 +714,7 @@ function App() {
 
   useEffect(
     () => () => {
+      audioRef.current?.pause();
       objectUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
       objectUrlsRef.current.clear();
     },
@@ -635,35 +774,144 @@ function App() {
   }
 
   function rollDice() {
-    const natural = Math.floor(Math.random() * 10) + 1;
-    const critical = natural === 10 ? "success" : natural === 1 ? "failure" : undefined;
-    const extraDie = critical ? Math.floor(Math.random() * 10) + 1 : undefined;
-    const total = natural + (extraDie ?? 0) * (critical === "failure" ? -1 : 1) + modifier;
-    setLastRoll(total);
-    const extraText = extraDie === undefined ? "" : ` ${critical === "failure" ? "−" : "+"} ${extraDie}`;
-    const modifierText = modifier ? ` ${modifier > 0 ? "+" : "−"} ${Math.abs(modifier)}` : "";
-    const status = critical === "success" ? " • SUCESSO CRÍTICO" : critical === "failure" ? " • FALHA CRÍTICA" : "";
+    const result = rollCyberpunkRed(modifier);
+    setLastRoll(result.total);
+    const extraText = result.extraDie === undefined
+      ? ""
+      : ` • dado adicional ${result.critical === "failure" ? "−" : "+"}${result.extraDie}`;
+    const modifierText = result.modifier === 0
+      ? " • modificador 0"
+      : ` • modificador ${result.modifier > 0 ? "+" : ""}${result.modifier}`;
+    const status = result.critical === "success"
+      ? " • SUCESSO CRÍTICO"
+      : result.critical === "failure"
+        ? " • FALHA CRÍTICA"
+        : "";
     addMessage({
       id: uniqueId(),
       author: playerName.trim() || "Jogador",
-      text: `Cyberpunk RED: d10 ${natural}${extraText}${modifierText} = ${total}${status}`,
+      text: `Cyberpunk RED: natural ${result.natural}${extraText}${modifierText} • total ${result.total}${status}`,
       time: new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }),
       kind: "roll",
-      critical,
-      roll: { natural, modifier, extraDie, total },
+      critical: result.critical,
+      roll: result,
     });
   }
 
-  function moveToken(clientX: number, clientY: number) {
-    if (!dragRef.current || !mapRef.current) return;
+  function mapPoint(clientX: number, clientY: number) {
+    if (!mapRef.current) return null;
     const rect = mapRef.current.getBoundingClientRect();
-    const x = Math.max(4, Math.min(96, ((clientX - rect.left) / rect.width) * 100));
-    const y = Math.max(6, Math.min(94, ((clientY - rect.top) / rect.height) * 100));
+    const width = rect.width * mapZoom;
+    const height = rect.height * mapZoom;
+    const pixelX = (clientX - rect.left - (rect.width - width) / 2) / mapZoom;
+    const pixelY = (clientY - rect.top - (rect.height - height) / 2) / mapZoom;
+    return {
+      x: Math.max(0, Math.min(100, (pixelX / rect.width) * 100)),
+      y: Math.max(0, Math.min(100, (pixelY / rect.height) * 100)),
+      pixelX,
+      pixelY,
+      rect,
+    };
+  }
+
+  function moveToken(clientX: number, clientY: number) {
+    const point = mapPoint(clientX, clientY);
+    if (!point) return;
+    const x = Math.max(4, Math.min(96, point.x));
+    const y = Math.max(6, Math.min(94, point.y));
+    if (sceneDragRef.current) {
+      sceneDragPositionRef.current = { x, y };
+      setSceneDragVisual({ id: sceneDragRef.current, x, y });
+      return;
+    }
+    if (dragRef.current === null) return;
     dragPositionRef.current = { x, y };
     setDragVisual({ id: dragRef.current, x, y });
   }
 
+  function changeMapZoom(delta: number) {
+    setMapZoom((current) => Math.max(0.5, Math.min(2, Number((current + delta).toFixed(2)))));
+  }
+
+  function handlePanelResize(clientX: number) {
+    if (!resizingPanelRef.current) return;
+    const maximum = Math.max(280, Math.min(560, window.innerWidth - 360));
+    setSidePanelWidth(Math.max(280, Math.min(maximum, window.innerWidth - clientX)));
+  }
+
+  function beginPanelResize(event: React.PointerEvent<HTMLDivElement>) {
+    event.preventDefault();
+    resizingPanelRef.current = true;
+    document.body.classList.add("resizing-side-panel");
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function resizePanelByKeyboard(direction: -1 | 1) {
+    setSidePanelWidth((width) => Math.max(280, Math.min(560, width + direction * 20)));
+  }
+
+  function finishPanelResize() {
+    resizingPanelRef.current = false;
+    document.body.classList.remove("resizing-side-panel");
+  }
+
+  function addSceneElement(kind: SceneElement["kind"], x: number, y: number) {
+    const count = sceneElementsRef.current.filter((item) => item.kind === kind).length + 1;
+    const defaults = {
+      marker: { name: "Marcador", color: "#18e3d0" },
+      cover: { name: "Cobertura", color: "#f5b84b" },
+      hazard: { name: "Perigo", color: "#ff5d73" },
+    } as const;
+    const element: SceneElement = {
+      id: uniqueId(),
+      kind,
+      name: `${defaults[kind].name} ${count}`,
+      color: defaults[kind].color,
+      size: "medium",
+      x,
+      y,
+    };
+    persistSceneElements([...sceneElementsRef.current, element]);
+    publish("scene.upsert", element);
+    setSelectedSceneElementId(element.id);
+    setScenePlacementKind(null);
+  }
+
+  function updateSceneElement(id: string, patch: Partial<SceneElement>) {
+    const next = sceneElementsRef.current.map((element) =>
+      element.id === id ? { ...element, ...patch } : element,
+    );
+    persistSceneElements(next);
+    const changed = next.find((element) => element.id === id);
+    if (changed) publish("scene.upsert", changed);
+  }
+
+  function removeSceneElement(id: string) {
+    const next = sceneElementsRef.current.filter((element) => element.id !== id);
+    persistSceneElements(next);
+    publish("scene.delete", { id });
+    setSelectedSceneElementId((selected) => (selected === id ? null : selected));
+  }
+
   function finishTokenDrag() {
+    if (sceneDragRef.current && sceneDragPositionRef.current && sceneDragStartRef.current) {
+      const id = sceneDragRef.current;
+      const position = sceneDragPositionRef.current;
+      const start = sceneDragStartRef.current;
+      if (start.x !== position.x || start.y !== position.y) {
+        const next = sceneElementsRef.current.map((item) =>
+          item.id === id ? { ...item, ...position } : item,
+        );
+        persistSceneElements(next);
+        const updated = next.find((item) => item.id === id);
+        if (updated) publish("scene.upsert", updated);
+      }
+      setSceneDragVisual(null);
+      sceneDragRef.current = null;
+      sceneDragPositionRef.current = null;
+      sceneDragStartRef.current = null;
+      return;
+    }
     const tokenId = dragRef.current;
     const position = dragPositionRef.current;
     const start = dragStartPositionRef.current;
@@ -683,15 +931,7 @@ function App() {
   }
 
   function measurePoint(clientX: number, clientY: number) {
-    if (!mapRef.current) return null;
-    const rect = mapRef.current.getBoundingClientRect();
-    return {
-      x: Math.max(0, Math.min(100, ((clientX - rect.left) / rect.width) * 100)),
-      y: Math.max(0, Math.min(100, ((clientY - rect.top) / rect.height) * 100)),
-      pixelX: clientX - rect.left,
-      pixelY: clientY - rect.top,
-      rect,
-    };
+    return mapPoint(clientX, clientY);
   }
 
   function startMeasurement(clientX: number, clientY: number) {
@@ -766,11 +1006,31 @@ function App() {
 
   function updateToken(tokenId: number, patch: Partial<Token>) {
     const next = tokensRef.current.map((token) =>
-      token.id === tokenId ? { ...token, ...patch } : token,
+      token.id === tokenId
+        ? { ...token, ...patch, ...(patch.name !== undefined ? { initials: initialsFromName(patch.name) } : {}) }
+        : token,
     );
     persistTokens(next);
     const changed = next.find((token) => token.id === tokenId);
     if (changed) publish("token.upsert", { ...changed, image: undefined });
+  }
+
+  function removeToken(tokenId: number) {
+    const token = tokensRef.current.find((item) => item.id === tokenId);
+    if (!token || !window.confirm(`Excluir o token “${token.name}” do tabuleiro?`)) return;
+    persistTokens(tokensRef.current.filter((item) => item.id !== tokenId));
+    setSelectedTokenId((selected) => (selected === tokenId ? null : selected));
+    if (token.imageAssetId) {
+      void removeLocalAsset(token.imageAssetId).catch(() => undefined);
+      setAssetUrls((current) => {
+        const next = { ...current };
+        const url = next[token.imageAssetId!];
+        if (url) releaseObjectUrl(url);
+        delete next[token.imageAssetId!];
+        return next;
+      });
+    }
+    publish("token.delete", { id: tokenId });
   }
 
   async function loadTokenImage(tokenId: number, file?: File) {
@@ -798,12 +1058,8 @@ function App() {
   }
 
   function drawingPoint(clientX: number, clientY: number) {
-    if (!mapRef.current) return null;
-    const rect = mapRef.current.getBoundingClientRect();
-    return {
-      x: Math.max(0, Math.min(100, ((clientX - rect.left) / rect.width) * 100)),
-      y: Math.max(0, Math.min(100, ((clientY - rect.top) / rect.height) * 100)),
-    };
+    const point = mapPoint(clientX, clientY);
+    return point ? { x: point.x, y: point.y } : null;
   }
 
   function startDrawing(clientX: number, clientY: number) {
@@ -877,6 +1133,7 @@ function App() {
       releaseObjectUrl(pdfUrl);
       setPdfUrl(url);
       setPdfName(file.name);
+      setPdfZoom(1);
       setPdfError("");
       sessionStorage.setItem("nexus-table-sheet", JSON.stringify({ id: assetId, name: file.name }));
     } catch (error) {
@@ -888,16 +1145,28 @@ function App() {
     releaseObjectUrl(pdfUrl);
     setPdfUrl(null);
     setPdfName("");
+    setPdfZoom(1);
     sessionStorage.removeItem("nexus-table-sheet");
     await removeLocalAsset(`nexus-character-sheet-${tabStorageId}`).catch(() => undefined);
   }
 
   function loadAudio(file?: File) {
     if (!file) return;
+    audioRef.current?.pause();
+    if (audioRef.current) audioRef.current.currentTime = 0;
     releaseObjectUrl(audioUrl);
     const url = createObjectUrl(file);
     setAudioUrl(url);
     setAudioName(file.name);
+    setAudioPlaying(false);
+  }
+
+  function clearAudio() {
+    audioRef.current?.pause();
+    if (audioRef.current) audioRef.current.currentTime = 0;
+    releaseObjectUrl(audioUrl);
+    setAudioUrl(null);
+    setAudioName("");
     setAudioPlaying(false);
   }
 
@@ -957,7 +1226,12 @@ function App() {
               const nextRole = currentRole === "gm" ? "player" : "gm";
               setCurrentRole(nextRole);
               setDrawingActive(false);
-              if (nextRole === "player") setTab("map");
+              if (nextRole === "player") {
+                setTab("map");
+                setSceneEditMode(false);
+                setScenePlacementKind(null);
+                setSelectedSceneElementId(null);
+              }
             }}
             title="Alternar visualização entre mestre e jogador"
           >
@@ -977,7 +1251,18 @@ function App() {
         </div>
       </header>
 
-      <div className="workspace">
+      <audio
+        className="audio-engine"
+        ref={audioRef}
+        src={audioUrl || undefined}
+        loop={audioLoop}
+        onEnded={() => setAudioPlaying(false)}
+      />
+
+      <div
+        className="workspace"
+        style={{ "--side-panel-width": `${sidePanelWidth}px` } as React.CSSProperties}
+      >
         <nav className="rail">
           <button className={tab === "map" ? "active" : ""} onClick={() => setTab("map")}>
             <Icon name="map" />
@@ -1058,19 +1343,56 @@ function App() {
                   <button>
                     <Icon name="eye" /> Névoa
                   </button>
+                  {currentRole === "gm" && (
+                    <button
+                      className={sceneEditMode ? "active" : ""}
+                      onClick={() => {
+                        const next = !sceneEditMode;
+                        setSceneEditMode(next);
+                        setScenePlacementKind(null);
+                        setRulerActive(false);
+                        setDrawingActive(false);
+                        setSelectedSceneElementId(null);
+                        if (next) setSelectedTokenId(null);
+                      }}
+                      title="Editar elementos do cenário"
+                    >
+                      <Icon name="pencil" /> Cenário
+                    </button>
+                  )}
                   <span className="zoom">
-                    − <b>100%</b> +
+                    <button onClick={() => changeMapZoom(-0.1)} aria-label="Diminuir zoom do mapa" title="Diminuir zoom">−</button>
+                    <b>{Math.round(mapZoom * 100)}%</b>
+                    <button onClick={() => changeMapZoom(0.1)} aria-label="Aumentar zoom do mapa" title="Aumentar zoom">+</button>
                   </span>
                 </div>
               </div>
               <div
                 ref={mapRef}
-                className={`battle-map ${rulerActive ? "ruler-active" : ""} ${drawingActive ? "drawing-active" : ""}`}
+                className={`battle-map ${rulerActive ? "ruler-active" : ""} ${drawingActive ? "drawing-active" : ""} ${sceneEditMode ? "scene-editing" : ""}`}
+                role="region"
+                aria-label="Mapa interativo. Clique no mapa para usar os atalhos de zoom."
+                tabIndex={0}
+                style={{
+                  backgroundSize: `${48 * mapZoom}px ${48 * mapZoom}px, ${48 * mapZoom}px ${48 * mapZoom}px, ${100 * mapZoom}% ${100 * mapZoom}%`,
+                  backgroundPosition: "center, center, center",
+                }}
                 onPointerDown={(e) => {
-                  if (drawingActive && canDraw) {
+                  const target = e.target as HTMLElement;
+                  if (
+                    scenePlacementKind &&
+                    sceneEditMode &&
+                    !target.closest(".map-token, .scene-element, .scene-tools, .drawing-tools")
+                  ) {
+                    const point = mapPoint(e.clientX, e.clientY);
+                    if (point) addSceneElement(scenePlacementKind, point.x, point.y);
+                  } else if (drawingActive && canDraw) {
                     e.currentTarget.setPointerCapture(e.pointerId);
                     startDrawing(e.clientX, e.clientY);
-                  } else if (rulerActive && e.target === e.currentTarget) {
+                  } else if (
+                    rulerActive &&
+                    !target.closest(".map-token, .scene-element, .scene-tools, .drawing-tools")
+                  ) {
                     e.currentTarget.setPointerCapture(e.pointerId);
                     startMeasurement(e.clientX, e.clientY);
                   }
@@ -1091,7 +1413,27 @@ function App() {
                   setDrawing(false);
                 }}
               >
-                <svg className="drawing-layer" viewBox="0 0 100 100" preserveAspectRatio="none">
+                {sceneEditMode && (
+                  <div className="scene-tools" onPointerDown={(e) => e.stopPropagation()}>
+                    <strong>EDITAR CENÁRIO</strong>
+                    {(["marker", "cover", "hazard"] as const).map((kind) => (
+                      <button
+                        key={kind}
+                        className={scenePlacementKind === kind ? "active" : ""}
+                        onClick={() => setScenePlacementKind((current) => current === kind ? null : kind)}
+                      >
+                        {kind === "marker" ? "＋ Marcador" : kind === "cover" ? "▰ Cobertura" : "⚠ Perigo"}
+                      </button>
+                    ))}
+                    <small>{scenePlacementKind ? "Clique em um espaço vazio do mapa para inserir." : "Selecione um elemento para mover ou editar."}</small>
+                  </div>
+                )}
+                <div className="map-zoom-layer" style={{ transform: `scale(${mapZoom})` }}>
+                <svg
+                  className="drawing-layer"
+                  viewBox="0 0 100 100"
+                  preserveAspectRatio="none"
+                >
                   {strokes.map((stroke) => (
                     <polyline
                       key={stroke.id}
@@ -1105,34 +1447,40 @@ function App() {
                     />
                   ))}
                 </svg>
-                {drawingActive && (
-                  <div className="drawing-tools" onPointerDown={(e) => e.stopPropagation()}>
-                    <span>DESENHO</span>
-                    {["#18e3d0", "#ff5d73", "#f5b84b", "#ffffff"].map((color) => (
-                      <button
-                        key={color}
-                        className={drawColor === color ? "selected" : ""}
-                        style={{ "--draw": color } as React.CSSProperties}
-                        onClick={() => setDrawColor(color)}
-                        aria-label={`Cor ${color}`}
-                      />
-                    ))}
-                    <button
-                      className="draw-action"
-                      onClick={() => setStrokes((list) => list.slice(0, -1))}
-                      disabled={!strokes.length}
-                    >
-                      Desfazer
-                    </button>
-                    <button
-                      className="draw-action danger"
-                      onClick={() => setStrokes([])}
-                      disabled={!strokes.length}
-                    >
-                      Limpar
-                    </button>
-                  </div>
-                )}
+                {sceneElements.map((element) => (
+                  <button
+                    key={element.id}
+                    type="button"
+                    className={`scene-element scene-${element.kind} scene-size-${element.size} ${selectedSceneElementId === element.id ? "selected" : ""}`}
+                    style={{
+                      left: `${sceneDragVisual?.id === element.id ? sceneDragVisual.x : element.x}%`,
+                      top: `${sceneDragVisual?.id === element.id ? sceneDragVisual.y : element.y}%`,
+                      "--scene-color": element.color,
+                    } as React.CSSProperties}
+                    aria-label={`${element.name}, ${element.kind === "marker" ? "marcador" : element.kind === "cover" ? "cobertura" : "perigo"}`}
+                    disabled={!sceneEditMode || currentRole !== "gm"}
+                    onPointerDown={(event) => {
+                      event.stopPropagation();
+                      if (!sceneEditMode || currentRole !== "gm") return;
+                      event.currentTarget.setPointerCapture(event.pointerId);
+                      sceneDragRef.current = element.id;
+                      sceneDragStartRef.current = { x: element.x, y: element.y };
+                      sceneDragPositionRef.current = { x: element.x, y: element.y };
+                      setSceneDragVisual({ id: element.id, x: element.x, y: element.y });
+                      setSelectedSceneElementId(element.id);
+                      setSelectedTokenId(null);
+                    }}
+                    onClick={() => {
+                      if (sceneEditMode && currentRole === "gm") {
+                        setSelectedSceneElementId(element.id);
+                        setSelectedTokenId(null);
+                      }
+                    }}
+                  >
+                    <span>{element.kind === "marker" ? "◆" : element.kind === "cover" ? "▰" : "⚠"}</span>
+                    <small>{element.name}</small>
+                  </button>
+                ))}
                 {tokens
                   .filter((token) => !token.hidden)
                   .map((token) => (
@@ -1147,13 +1495,14 @@ function App() {
                         } as React.CSSProperties
                       }
                       onPointerDown={(e) => {
-                        if (rulerActive || drawingActive) return;
+                        if (rulerActive || drawingActive || sceneEditMode) return;
                         e.currentTarget.setPointerCapture(e.pointerId);
                         dragRef.current = token.id;
                         dragStartPositionRef.current = { x: token.x, y: token.y };
                         dragPositionRef.current = { x: token.x, y: token.y };
                         setDragVisual({ id: token.id, x: token.x, y: token.y });
                         setSelectedTokenId(token.id);
+                        setSelectedSceneElementId(null);
                       }}
                       aria-label={`Mover ${token.name}`}
                     >
@@ -1201,6 +1550,35 @@ function App() {
                     <div className="measure-line" />
                     <strong>{measurement.distance} ft</strong>
                     <span className="measure-end" />
+                  </div>
+                )}
+                </div>
+                {drawingActive && (
+                  <div className="drawing-tools" onPointerDown={(e) => e.stopPropagation()}>
+                    <span>DESENHO</span>
+                    {["#18e3d0", "#ff5d73", "#f5b84b", "#ffffff"].map((color) => (
+                      <button
+                        key={color}
+                        className={drawColor === color ? "selected" : ""}
+                        style={{ "--draw": color } as React.CSSProperties}
+                        onClick={() => setDrawColor(color)}
+                        aria-label={`Cor ${color}`}
+                      />
+                    ))}
+                    <button
+                      className="draw-action"
+                      onClick={() => setStrokes((list) => list.slice(0, -1))}
+                      disabled={!strokes.length}
+                    >
+                      Desfazer
+                    </button>
+                    <button
+                      className="draw-action danger"
+                      onClick={() => setStrokes([])}
+                      disabled={!strokes.length}
+                    >
+                      Limpar
+                    </button>
                   </div>
                 )}
                 {selectedTokenId &&
@@ -1317,11 +1695,28 @@ function App() {
                             <Icon name="plus" size={15} /> Adicionar
                           </button>
                         </div>
-                        {!selected.enemy && (
                           <div className="token-customizer">
                             <div className="customizer-title">
-                              <span>PERSONAGEM</span>
-                              <small>Somente você pode editar</small>
+                              <span>IDENTIDADE DO TOKEN</span>
+                              <small>Alterações locais nesta mesa</small>
+                            </div>
+                            <div className="token-identity">
+                              <label>
+                                Nome
+                                <input
+                                  value={selected.name}
+                                  maxLength={32}
+                                  onChange={(event) => updateToken(selected.id, { name: event.target.value })}
+                                />
+                              </label>
+                              <label>
+                                Cor
+                                <input
+                                  type="color"
+                                  value={selected.color}
+                                  onChange={(event) => updateToken(selected.id, { color: event.target.value })}
+                                />
+                              </label>
                             </div>
                             <div className="customizer-row">
                               <label className="token-upload">
@@ -1392,8 +1787,55 @@ function App() {
                                 </select>
                               </label>
                             </div>
+                            <button className="token-delete" onClick={() => removeToken(selected.id)}>
+                              <Icon name="trash" size={14} /> Excluir token
+                            </button>
                           </div>
-                        )}
+                      </div>
+                    );
+                  })()}
+                {selectedSceneElementId && sceneEditMode && currentRole === "gm" &&
+                  (() => {
+                    const selected = sceneElements.find((element) => element.id === selectedSceneElementId);
+                    if (!selected) return null;
+                    return (
+                      <div className="scene-properties-panel" onPointerDown={(event) => event.stopPropagation()}>
+                        <header>
+                          <strong>ELEMENTO DO CENÁRIO</strong>
+                          <button onClick={() => setSelectedSceneElementId(null)} aria-label="Fechar propriedades">
+                            <Icon name="close" size={15} />
+                          </button>
+                        </header>
+                        <label>
+                          Nome
+                          <input
+                            value={selected.name}
+                            maxLength={32}
+                            onChange={(event) => updateSceneElement(selected.id, { name: event.target.value })}
+                          />
+                        </label>
+                        <label>
+                          Cor
+                          <input
+                            type="color"
+                            value={selected.color}
+                            onChange={(event) => updateSceneElement(selected.id, { color: event.target.value })}
+                          />
+                        </label>
+                        <label>
+                          Tamanho
+                          <select
+                            value={selected.size}
+                            onChange={(event) => updateSceneElement(selected.id, { size: event.target.value as SceneElement["size"] })}
+                          >
+                            <option value="small">Pequeno</option>
+                            <option value="medium">Médio</option>
+                            <option value="large">Grande</option>
+                          </select>
+                        </label>
+                        <button className="scene-delete" onClick={() => removeSceneElement(selected.id)}>
+                          <Icon name="trash" size={14} /> Remover elemento
+                        </button>
                       </div>
                     );
                   })()}
@@ -1558,7 +2000,27 @@ function App() {
           )}
         </main>
 
-        <aside className={`side-panel ${sideOpen ? "open" : ""}`}>
+        <aside className={`side-panel ${sideOpen ? "open" : ""} ${sidePanelExpanded ? "expanded" : ""}`}>
+          <div
+            className="side-panel-resize-handle"
+            role="separator"
+            aria-label="Redimensionar painel lateral"
+            aria-orientation="vertical"
+            aria-valuemin={280}
+            aria-valuemax={560}
+            aria-valuenow={sidePanelWidth}
+            tabIndex={0}
+            onPointerDown={beginPanelResize}
+            onKeyDown={(event) => {
+              if (event.key === "ArrowLeft") {
+                event.preventDefault();
+                resizePanelByKeyboard(1);
+              } else if (event.key === "ArrowRight") {
+                event.preventDefault();
+                resizePanelByKeyboard(-1);
+              }
+            }}
+          />
           <div className="panel-tabs">
             <button
               className={rightPanel === "chat" ? "active" : ""}
@@ -1584,7 +2046,23 @@ function App() {
             >
               <Icon name="music" /> Áudio
             </button>
-            <button className="panel-close" onClick={() => setSideOpen(false)}>
+            <button
+              className="panel-expand"
+              onClick={() => setSidePanelExpanded((expanded) => !expanded)}
+              aria-label={sidePanelExpanded ? "Restaurar painel lateral" : "Maximizar painel lateral"}
+              aria-expanded={sidePanelExpanded}
+              title={sidePanelExpanded ? "Restaurar painel" : "Maximizar painel"}
+            >
+              <Icon name={sidePanelExpanded ? "minimize" : "maximize"} size={16} />
+            </button>
+            <button
+              className="panel-close"
+              onClick={() => {
+                setSidePanelExpanded(false);
+                setSideOpen(false);
+              }}
+              aria-label="Fechar painel lateral"
+            >
               <Icon name="close" />
             </button>
           </div>
@@ -1677,11 +2155,42 @@ function App() {
                   <div>
                     <Icon name="file" />
                     <span title={pdfName}>{pdfName}</span>
+                    <div className="pdf-zoom-controls" aria-label="Controles de zoom do PDF">
+                      <button
+                        onClick={() => setPdfZoom((zoom) => Math.max(0.5, Number((zoom - 0.1).toFixed(2))))}
+                        aria-label="Diminuir zoom do PDF"
+                        title="Diminuir zoom"
+                        disabled={pdfZoom <= 0.5}
+                      >
+                        −
+                      </button>
+                      <button
+                        onClick={() => setPdfZoom(1)}
+                        aria-label="Restaurar zoom do PDF para 100%"
+                        title="Restaurar zoom"
+                      >
+                        {Math.round(pdfZoom * 100)}%
+                      </button>
+                      <button
+                        onClick={() => setPdfZoom((zoom) => Math.min(2, Number((zoom + 0.1).toFixed(2))))}
+                        aria-label="Aumentar zoom do PDF"
+                        title="Aumentar zoom"
+                        disabled={pdfZoom >= 2}
+                      >
+                        +
+                      </button>
+                    </div>
                     <button onClick={() => void clearPdf()} aria-label="Remover ficha salva">
                       <Icon name="close" />
                     </button>
                   </div>
-                  <iframe src={pdfUrl} title="Ficha de personagem" />
+                  <div className="pdf-viewport">
+                    <iframe
+                      src={pdfUrl}
+                      title="Ficha de personagem"
+                      style={{ transform: `scale(${pdfZoom})` }}
+                    />
+                  </div>
                 </div>
               ) : (
                 <div className="side-pdf-empty">
@@ -1711,12 +2220,6 @@ function App() {
                 <h2>Mesa de som</h2>
                 <p>Crie a atmosfera da cena sem sair da mesa.</p>
               </div>
-              <audio
-                ref={audioRef}
-                src={audioUrl || undefined}
-                loop={audioLoop}
-                onEnded={() => setAudioPlaying(false)}
-              />
               {audioUrl ? (
                 <div className="now-playing">
                   <div className={`music-art ${audioPlaying ? "playing" : ""}`}>
@@ -1762,14 +2265,7 @@ function App() {
                         onChange={(e) => loadAudio(e.target.files?.[0])}
                       />
                     </label>
-                    <button
-                      onClick={() => {
-                        audioRef.current?.pause();
-                        setAudioPlaying(false);
-                        setAudioUrl(null);
-                        setAudioName("");
-                      }}
-                    >
+                    <button onClick={clearAudio}>
                       Remover
                     </button>
                   </div>

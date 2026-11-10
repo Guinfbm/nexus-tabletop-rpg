@@ -1,6 +1,9 @@
 export type TableEventType =
   | "token.upsert"
   | "token.move"
+  | "token.delete"
+  | "scene.upsert"
+  | "scene.delete"
   | "chat.message"
   | "gm.notes"
   | "gm.initiative"
